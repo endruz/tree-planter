@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -u
+
+GIT_TP_VERSION="0.1.0"
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+source "$SCRIPT_DIR/../lib/git-tp/config.bash"
+source "$SCRIPT_DIR/../lib/git-tp/context.bash"
+source "$SCRIPT_DIR/../lib/git-tp/path.bash"
+source "$SCRIPT_DIR/../lib/git-tp/git.bash"
+source "$SCRIPT_DIR/../lib/git-tp/hooks.bash"
+source "$SCRIPT_DIR/../lib/git-tp/commands.bash"
+
+print_help() {
+    cat <<'EOF'
+git tp - manage linked worktrees
+
+Usage:
+  git tp add [--create-branch] <branch>
+  git tp remove [-f|--force] <branch>
+  git tp cleanup
+  git tp --help
+  git tp --version
+EOF
+}
+
+print_command_help() {
+    case "$1" in
+        add)
+            printf '%s\n' 'Usage: git tp add [--create-branch] <branch>'
+            ;;
+        remove)
+            printf '%s\n' 'Usage: git tp remove [-f|--force] <branch>'
+            ;;
+        cleanup)
+            printf '%s\n' 'Usage: git tp cleanup'
+            ;;
+    esac
+}
+
+fail() {
+    printf 'git-tp: %s\n' "$1" >&2
+    exit 1
+}
+
+if [[ ${1:-} == "--help" || ${1:-} == "-h" || $# -eq 0 ]]; then
+    print_help
+    exit 0
+fi
+
+if [[ ${1:-} == "--version" ]]; then
+    printf 'git-tp %s\n' "$GIT_TP_VERSION"
+    exit 0
+fi
+
+command_name=$1
+shift
+case "$command_name" in
+    add|remove|cleanup)
+        if [[ ${1:-} == "--help" || ${1:-} == "-h" ]]; then
+            print_command_help "$command_name"
+            exit 0
+        fi
+        ;;
+    *)
+        fail "unknown command: $command_name"
+        ;;
+esac
+
+command -v realpath >/dev/null 2>&1 || fail 'required command not found: realpath'
+
+config_load
+context_load
+path_load_hook_paths
+cd "$GIT_TP_REPOSITORY" || fail "unable to enter repository: $GIT_TP_REPOSITORY"
+
+case "$command_name" in
+    add) command_add "$@" ;;
+    remove) command_remove "$@" ;;
+    cleanup) command_cleanup "$@" ;;
+esac
