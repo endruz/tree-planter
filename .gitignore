@@ -1,0 +1,6 @@
+# agents
+.agents/
+skills-lock.json
+
+# temporary files
+tmp/
