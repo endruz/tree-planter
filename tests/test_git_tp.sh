@@ -186,6 +186,48 @@ post-hook = \"hooks/post-add.sh\""
     test_end
 }
 
+run_legacy_git_tests() {
+    test_start legacy-git
+    worktree_root="$HOME/worktrees"
+    write_config "[worktree]
+root = \"$worktree_root\""
+
+    real_git=$(command -v git)
+    mkdir -p "$HOME/bin"
+    cat > "$HOME/bin/git" <<EOF
+#!/usr/bin/env bash
+if [[ "\$*" == *"rev-parse --path-format=absolute --git-common-dir"* ]]; then
+    printf '%s\n' --
+    exit 0
+fi
+exec "$real_git" "\$@"
+EOF
+    chmod +x "$HOME/bin/git"
+    old_path=$PATH
+    PATH="$HOME/bin:$PATH"
+
+    assert_success run_git_tp add --create-branch feature/first--branch
+    assert_success run_git_tp add --create-branch feature/second--branch
+    first_target="$worktree_root/$(basename "$TEST_REPO")/feature/first--branch"
+    second_target="$worktree_root/$(basename "$TEST_REPO")/feature/second--branch"
+    [[ -d "$first_target" && -d "$second_target" ]] || { printf 'FAIL: same-repository worktrees were not both created\n' >&2; failures=$((failures + 1)); }
+    assert_stderr_not_contains 'cd: --: invalid option'
+
+    second_repo="$HOME/other/repo"
+    mkdir -p "$second_repo"
+    git -C "$second_repo" init -q
+    git -C "$second_repo" config user.email test@example.com
+    git -C "$second_repo" config user.name Test
+    printf second > "$second_repo/README"
+    git -C "$second_repo" add README
+    git -C "$second_repo" commit -qm initial
+    assert_failure run_git_tp_from "$second_repo" add --create-branch feature/collision
+    assert_stderr_contains 'repository directory name collision'
+
+    PATH=$old_path
+    test_end
+}
+
 run_hook_cleanup_tests() {
     test_start hooks
     worktree_root="$HOME/worktrees"
@@ -242,11 +284,15 @@ case "$MODE" in
     hooks)
         run_hook_cleanup_tests
         ;;
+    legacy-git)
+        run_legacy_git_tests
+        ;;
     all)
         run_cli_tests
         run_config_tests
         run_command_tests
         run_hook_cleanup_tests
+        run_legacy_git_tests
         ;;
     *)
         printf 'unknown test mode: %s\n' "$MODE" >&2

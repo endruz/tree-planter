@@ -30,7 +30,11 @@ path_resolve_worktree() {
     if [[ -d "$repository_slot" ]]; then
         while IFS= read -r existing_git; do
             existing_root=$(dirname "$existing_git")
-            existing_common=$(git -C "$existing_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+            existing_common=$(git -C "$existing_root" rev-parse --git-common-dir 2>/dev/null || true)
+            case "$existing_common" in
+                /*) ;;
+                *) existing_common="$existing_root/$existing_common" ;;
+            esac
             if [[ -n "$existing_common" && "$(realpath -m -- "$existing_common")" != "$GIT_TP_COMMON_DIR" ]]; then
                 fail "repository directory name collision: $repository_slot is used by $(git -C "$existing_root" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$existing_root")"
             fi
