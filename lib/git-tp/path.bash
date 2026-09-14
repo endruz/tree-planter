@@ -31,6 +31,7 @@ path_resolve_worktree() {
         while IFS= read -r existing_git; do
             existing_root=$(dirname "$existing_git")
             existing_common=$(git -C "$existing_root" rev-parse --git-common-dir 2>/dev/null || true)
+            [[ -n "$existing_common" ]] || continue
             case "$existing_common" in
                 /*) ;;
                 *) existing_common="$existing_root/$existing_common" ;;

@@ -206,12 +206,18 @@ EOF
     old_path=$PATH
     PATH="$HOME/bin:$PATH"
 
-    assert_success run_git_tp add --create-branch feature/first--branch
+    nested_dir="$TEST_REPO/nested"
+    mkdir -p "$nested_dir"
+    assert_success run_git_tp_from "$nested_dir" add --create-branch feature/first--branch
     assert_success run_git_tp add --create-branch feature/second--branch
     first_target="$worktree_root/$(basename "$TEST_REPO")/feature/first--branch"
     second_target="$worktree_root/$(basename "$TEST_REPO")/feature/second--branch"
     [[ -d "$first_target" && -d "$second_target" ]] || { printf 'FAIL: same-repository worktrees were not both created\n' >&2; failures=$((failures + 1)); }
     assert_stderr_not_contains 'cd: --: invalid option'
+
+    mkdir -p "$worktree_root/$(basename "$TEST_REPO")/unparseable"
+    printf 'not a gitdir\n' > "$worktree_root/$(basename "$TEST_REPO")/unparseable/.git"
+    assert_success run_git_tp add --create-branch feature/unparseable
 
     second_repo="$HOME/other/repo"
     mkdir -p "$second_repo"
