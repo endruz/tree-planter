@@ -40,7 +40,10 @@ git_remote_branch_name() {
 }
 
 git_branch_exists() {
-    git show-ref --verify --quiet "refs/heads/$1" || git_remote_branch_ref "$1" >/dev/null
+    if git show-ref --verify --quiet "refs/heads/$1"; then
+        return 0
+    fi
+    git_remote_branch_ref "$1" >/dev/null
 }
 
 git_branch_in_use() {

@@ -159,6 +159,15 @@ root = \"$worktree_root\""
     [[ "$worktree_head" == "$remote_head" ]] || { printf 'FAIL: worktree was not created from remote branch\n' >&2; failures=$((failures + 1)); }
     assert_success run_git_tp remove feature/remote-topic
     git -C "$TEST_REPO" branch -Dq feature/remote-topic
+    git -C "$TEST_REPO" branch feature/remote-topic "$remote_head"
+    assert_success run_git_tp add origin/feature/remote-topic
+    assert_success run_git_tp remove feature/remote-topic
+    git -C "$TEST_REPO" branch -Dq feature/remote-topic
+    git -C "$TEST_REPO" branch feature/remote-topic "$current_branch"
+    assert_failure run_git_tp add origin/feature/remote-topic
+    assert_stderr_contains 'local branch already exists for remote branch'
+    [[ ! -e "$remote_target" ]] || { printf 'FAIL: conflicting remote branch created a worktree\n' >&2; failures=$((failures + 1)); }
+    git -C "$TEST_REPO" branch -Dq feature/remote-topic
     assert_success run_git_tp add origin/feature/remote-topic
     qualified_target="$worktree_root/$(basename "$TEST_REPO")/feature/remote-topic"
     [[ -d "$qualified_target" ]] || { printf 'FAIL: qualified remote branch worktree was not created\n' >&2; failures=$((failures + 1)); }
@@ -181,8 +190,18 @@ root = \"$worktree_root\""
     git -C "$TEST_REPO" worktree list --porcelain | grep -Fq 'branch refs/heads/feature/remote-topic' || { printf 'FAIL: slash-containing remote name created the wrong local branch\n' >&2; failures=$((failures + 1)); }
     assert_success run_git_tp remove feature/remote-topic
 
+    git -C "$TEST_REPO" remote remove origin
+    git -C "$TEST_REPO" update-ref refs/remotes/origin/stale "$remote_head"
+    assert_failure run_git_tp add origin/stale
+    assert_stderr_contains 'unable to resolve remote branch: origin/stale'
+
     assert_success run_git_tp add --create-branch origin/topic
     assert_success run_git_tp remove origin/topic
+    assert_success run_git_tp add --create-branch refs/heads/full-ref
+    assert_failure run_git_tp remove refs/heads/full-ref
+    assert_stderr_contains 'only local branch names'
+    git -C "$TEST_REPO" worktree remove --force -- "$worktree_root/$(basename "$TEST_REPO")/refs/heads/full-ref"
+    git -C "$TEST_REPO" branch -Dq -- refs/heads/full-ref
 
     assert_failure run_git_tp add --create-branch feature/demo
     assert_stderr_contains 'already used by worktree'
@@ -252,6 +271,15 @@ fi
 if [[ "\${FAIL_REMOTE_LIST:-}" == 1 && "\$*" == "remote" ]]; then
     exit 43
 fi
+if [[ "\${FAIL_REMOTE_NAME:-}" == 1 && "\$*" == "remote" ]]; then
+    exit 44
+fi
+if [[ "\${FAIL_REMOTE_AFTER_FIRST:-}" == 1 && "\$*" == "remote" ]]; then
+    if [[ -e "$HOME/remote-query-seen" ]]; then
+        exit 45
+    fi
+    : > "$HOME/remote-query-seen"
+fi
 exec "$real_git" "\$@"
 EOF
     chmod +x "$HOME/bin/git"
@@ -286,7 +314,22 @@ EOF
     assert_stderr_contains 'unable to inspect remotes'
     unset FAIL_REMOTE_LIST
 
-    second_repo="$HOME/other/repo"
+    git -C "$TEST_REPO" update-ref refs/remotes/origin/stale HEAD
+    export FAIL_REMOTE_NAME=1
+    assert_failure run_git_tp add origin/stale
+    assert_stderr_contains 'unable to inspect remotes'
+    unset FAIL_REMOTE_NAME
+
+    export FAIL_REMOTE_AFTER_FIRST=1
+    assert_failure run_git_tp add --create-branch feature/remote-query-fails
+    assert_stderr_contains 'unable to inspect remotes'
+    [[ ! -e "$worktree_root/$(basename "$TEST_REPO")/feature/remote-query-fails" ]] || {
+        printf 'FAIL: remote query failure created a target\n' >&2
+        failures=$((failures + 1))
+    }
+    unset FAIL_REMOTE_AFTER_FIRST
+
+    second_repo="$HOME/other/other-repo"
     mkdir -p "$second_repo"
     git -C "$second_repo" init -q
     git -C "$second_repo" config user.email test@example.com
@@ -294,6 +337,8 @@ EOF
     printf second > "$second_repo/README"
     git -C "$second_repo" add README
     git -C "$second_repo" commit -qm initial
+    ordinary_repo="$worktree_root/$(basename "$second_repo")/ordinary-repo"
+    git init -q "$ordinary_repo"
     assert_failure run_git_tp_from "$second_repo" add --create-branch feature/collision
     assert_stderr_contains 'repository directory name collision'
 

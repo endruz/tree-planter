@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 command_add() {
-    local create_branch=false branch arg remote_ref
+    local create_branch=false branch arg remote_ref requested_branch remote_branch_name local_head remote_head
     while (($# > 0)); do
         arg=$1
         shift
@@ -17,6 +17,7 @@ command_add() {
     done
     [[ -n ${branch:-} ]] || fail 'add requires a branch'
 
+    requested_branch=$branch
     path_validate_branch "$branch"
     remote_ref=''
     if ! git show-ref --verify --quiet "refs/heads/$branch"; then
@@ -30,7 +31,20 @@ command_add() {
             esac
         fi
         if [[ -n "$remote_ref" ]]; then
-            branch=$(git_remote_branch_name "$remote_ref") || fail "unable to resolve remote branch: $branch"
+            if remote_branch_name=$(git_remote_branch_name "$remote_ref"); then
+                branch=$remote_branch_name
+            else
+                case "$?" in
+                    3) fail 'unable to inspect remotes' ;;
+                    *) fail "unable to resolve remote branch: $requested_branch" ;;
+                esac
+            fi
+            if git show-ref --verify --quiet "refs/heads/$branch"; then
+                local_head=$(git rev-parse "refs/heads/$branch") || fail "unable to resolve local branch: $branch"
+                remote_head=$(git rev-parse "$remote_ref") || fail "unable to resolve remote branch: $requested_branch"
+                [[ "$local_head" == "$remote_head" ]] ||
+                    fail "local branch already exists for remote branch: $branch"
+            fi
         fi
     fi
     if git_branch_in_use "$branch"; then
@@ -45,20 +59,30 @@ command_add() {
     local new_branch=false
     if [[ -n "$remote_ref" ]] && ! git show-ref --verify --quiet "refs/heads/$branch"; then
         new_branch=true
-    elif ! git_branch_exists "$branch"; then
-        if [[ "$create_branch" != true ]]; then
-            if [[ -t 0 && -t 1 ]]; then
-                printf 'Create it from current HEAD? [y/N] '
-                read -r answer || answer=''
-                case "$answer" in
-                    y|yes) ;;
-                    *) fail "branch does not exist: $branch" ;;
-                esac
-            else
-                fail "branch does not exist; use --create-branch: $branch"
+    else
+        if git_branch_exists "$branch"; then
+            :
+        else
+            case "$?" in
+                1) ;;
+                2) fail "ambiguous remote branch: $branch; use a qualified remote/branch name" ;;
+                3) fail 'unable to inspect remotes' ;;
+                *) fail "unable to inspect branch: $branch" ;;
+            esac
+            if [[ "$create_branch" != true ]]; then
+                if [[ -t 0 && -t 1 ]]; then
+                    printf 'Create it from current HEAD? [y/N] '
+                    read -r answer || answer=''
+                    case "$answer" in
+                        y|yes) ;;
+                        *) fail "branch does not exist: $branch" ;;
+                    esac
+                else
+                    fail "branch does not exist; use --create-branch: $branch"
+                fi
             fi
+            new_branch=true
         fi
-        new_branch=true
     fi
 
     GIT_TP_ACTIVE_COMMAND=add
