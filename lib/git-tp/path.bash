@@ -50,8 +50,11 @@ path_resolve_worktree() {
 
 path_find_worktree_for_branch() {
     local branch=$1
-    local worktree current_branch
-    [[ "$branch" != refs/* && "$branch" != origin/* ]] || fail "remove accepts only local branch names: $branch"
+    local worktree current_branch worktree_list
+    if ! git show-ref --verify --quiet "refs/heads/$branch"; then
+        [[ "$branch" != refs/* && "$branch" != origin/* ]] || fail "remove accepts only local branch names: $branch"
+    fi
+    worktree_list=$(git worktree list --porcelain) || return 2
     worktree=''
     current_branch=''
     while IFS= read -r line; do
@@ -65,7 +68,7 @@ path_find_worktree_for_branch() {
                 fi
                 ;;
         esac
-    done < <(git worktree list --porcelain)
+    done <<< "$worktree_list"
     return 1
 }
 

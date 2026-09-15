@@ -20,13 +20,25 @@ command_add() {
     path_validate_branch "$branch"
     remote_ref=''
     if ! git show-ref --verify --quiet "refs/heads/$branch"; then
-        remote_ref=$(git_remote_branch_ref "$branch" 2>/dev/null || true)
+        if remote_ref=$(git_remote_branch_ref "$branch" 2>/dev/null); then
+            :
+        else
+            case "$?" in
+                2) fail "ambiguous remote branch: $branch; use a qualified remote/branch name" ;;
+                3) fail 'unable to inspect remotes' ;;
+                *) remote_ref='' ;;
+            esac
+        fi
         if [[ -n "$remote_ref" ]]; then
             branch=$(git_remote_branch_name "$remote_ref") || fail "unable to resolve remote branch: $branch"
         fi
     fi
     if git_branch_in_use "$branch"; then
         fail "branch is already used by worktree: $GIT_TP_BRANCH_WORKTREE"
+    else
+        case "$?" in
+            2) fail 'unable to inspect worktrees' ;;
+        esac
     fi
     path_resolve_worktree "$branch"
 
@@ -88,8 +100,13 @@ command_remove() {
     done
     [[ -n ${branch:-} ]] || fail 'remove requires a branch'
     path_validate_branch "$branch"
-    if ! path_find_worktree_for_branch "$branch"; then
-        fail "no worktree found for branch: $branch"
+    if path_find_worktree_for_branch "$branch"; then
+        :
+    else
+        case "$?" in
+            2) fail 'unable to inspect worktrees' ;;
+            *) fail "no worktree found for branch: $branch" ;;
+        esac
     fi
     [[ "$GIT_TP_FOUND_WORKTREE" != "$GIT_TP_REPOSITORY" ]] || fail 'cannot remove the main worktree'
     if path_is_inside "$GIT_TP_CURRENT_WORKTREE" "$GIT_TP_FOUND_WORKTREE"; then

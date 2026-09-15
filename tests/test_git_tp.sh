@@ -170,14 +170,19 @@ root = \"$worktree_root\""
     nested_remote_repo="$HOME/team-origin.git"
     git init --bare -q "$nested_remote_repo"
     git -C "$TEST_REPO" remote add team/origin "$nested_remote_repo"
-    git -C "$TEST_REPO" push -q team/origin feature/remote-topic
+    git -C "$TEST_REPO" push -q team/origin refs/remotes/origin/feature/remote-topic:refs/heads/feature/remote-topic
     git -C "$TEST_REPO" fetch -q team/origin
     git -C "$TEST_REPO" branch -Dq feature/remote-topic
+    assert_failure run_git_tp add feature/remote-topic
+    assert_stderr_contains 'ambiguous remote branch'
     assert_success run_git_tp add team/origin/feature/remote-topic
     nested_target="$worktree_root/$(basename "$TEST_REPO")/feature/remote-topic"
     [[ -d "$nested_target" ]] || { printf 'FAIL: slash-containing remote name created the wrong worktree path\n' >&2; failures=$((failures + 1)); }
     git -C "$TEST_REPO" worktree list --porcelain | grep -Fq 'branch refs/heads/feature/remote-topic' || { printf 'FAIL: slash-containing remote name created the wrong local branch\n' >&2; failures=$((failures + 1)); }
     assert_success run_git_tp remove feature/remote-topic
+
+    assert_success run_git_tp add --create-branch origin/topic
+    assert_success run_git_tp remove origin/topic
 
     assert_failure run_git_tp add --create-branch feature/demo
     assert_stderr_contains 'already used by worktree'
@@ -241,6 +246,12 @@ if [[ "\$*" == *"rev-parse --path-format=absolute --git-common-dir"* ]]; then
     printf '%s\n' --
     exit 0
 fi
+if [[ "\${FAIL_WORKTREE_LIST:-}" == 1 && "\$*" == "worktree list --porcelain" ]]; then
+    exit 42
+fi
+if [[ "\${FAIL_REMOTE_LIST:-}" == 1 && "\$*" == "remote" ]]; then
+    exit 43
+fi
 exec "$real_git" "\$@"
 EOF
     chmod +x "$HOME/bin/git"
@@ -259,6 +270,21 @@ EOF
     mkdir -p "$worktree_root/$(basename "$TEST_REPO")/unparseable"
     printf 'not a gitdir\n' > "$worktree_root/$(basename "$TEST_REPO")/unparseable/.git"
     assert_success run_git_tp add --create-branch feature/unparseable
+
+    export FAIL_WORKTREE_LIST=1
+    assert_failure run_git_tp add --create-branch feature/list-fails
+    assert_stderr_contains 'unable to inspect worktrees'
+    [[ ! -e "$worktree_root/$(basename "$TEST_REPO")/feature/list-fails" ]] || { printf 'FAIL: worktree-list failure created a target\n' >&2; failures=$((failures + 1)); }
+    git -C "$TEST_REPO" show-ref --verify --quiet refs/heads/feature/list-fails && { printf 'FAIL: worktree-list failure created a branch\n' >&2; failures=$((failures + 1)); }
+    assert_failure run_git_tp remove feature/first--branch
+    assert_stderr_contains 'unable to inspect worktrees'
+    [[ -d "$first_target" ]] || { printf 'FAIL: worktree-list failure removed a target\n' >&2; failures=$((failures + 1)); }
+    unset FAIL_WORKTREE_LIST
+
+    export FAIL_REMOTE_LIST=1
+    assert_failure run_git_tp add --create-branch feature/remote-fails
+    assert_stderr_contains 'unable to inspect remotes'
+    unset FAIL_REMOTE_LIST
 
     second_repo="$HOME/other/repo"
     mkdir -p "$second_repo"
