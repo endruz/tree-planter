@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 command_add() {
-    local create_branch=false branch arg remote_ref remote_branch
+    local create_branch=false branch arg remote_ref
     while (($# > 0)); do
         arg=$1
         shift
@@ -22,8 +22,7 @@ command_add() {
     if ! git show-ref --verify --quiet "refs/heads/$branch"; then
         remote_ref=$(git_remote_branch_ref "$branch" 2>/dev/null || true)
         if [[ -n "$remote_ref" ]]; then
-            remote_branch=${remote_ref#refs/remotes/}
-            branch=${remote_branch#*/}
+            branch=$(git_remote_branch_name "$remote_ref") || fail "unable to resolve remote branch: $branch"
         fi
     fi
     if git_branch_in_use "$branch"; then

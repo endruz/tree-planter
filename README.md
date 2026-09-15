@@ -44,7 +44,7 @@ git tp remove [-f|--force] <branch>
 git tp cleanup
 ```
 
-- `add` creates a linked worktree from a local or remote-tracking branch. For a remote-tracking branch, it creates a corresponding local branch from the remote commit before creating the worktree.
+- `add` creates a linked worktree from a local or remote-tracking branch. For a remote-tracking branch, it creates a corresponding local branch from the remote commit before creating the worktree. With `--create-branch`, a missing branch is created from the caller's current `HEAD`; in an interactive terminal, `add` can also ask for confirmation before doing so.
 - `remove` only accepts local branch names and targets their linked worktrees; it protects the main worktree and uncommitted changes unless `--force` is used.
 - `cleanup` prunes Git's stale worktree records and never deletes an existing worktree directory.
 

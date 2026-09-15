@@ -1,20 +1,37 @@
 #!/usr/bin/env bash
 
 git_remote_branch_ref() {
-    local branch=$1 remote_ref remote_count=0 remote_match=''
+    local branch=$1 remote remote_ref remote_count=0 remote_match=''
     if git show-ref --verify --quiet "refs/remotes/$branch"; then
         printf 'refs/remotes/%s\n' "$branch"
         return 0
     fi
-    while IFS= read -r remote_ref; do
-        remote_count=$((remote_count + 1))
-        remote_match=$remote_ref
-    done < <(git for-each-ref --format='%(refname)' "refs/remotes/*/$branch")
+    while IFS= read -r remote; do
+        remote_ref="refs/remotes/$remote/$branch"
+        if git show-ref --verify --quiet "$remote_ref"; then
+            remote_count=$((remote_count + 1))
+            remote_match=$remote_ref
+        fi
+    done < <(git remote)
     if (( remote_count == 1 )); then
         printf '%s\n' "$remote_match"
         return 0
     fi
     return 1
+}
+
+git_remote_branch_name() {
+    local remote_ref=$1 suffix remote prefix remote_length=0 branch=''
+    suffix=${remote_ref#refs/remotes/}
+    while IFS= read -r remote; do
+        prefix="$remote/"
+        if [[ "$suffix" == "$prefix"* ]] && (( ${#remote} > remote_length )); then
+            remote_length=${#remote}
+            branch=${suffix:$((remote_length + 1))}
+        fi
+    done < <(git remote)
+    [[ -n "$branch" ]] || return 1
+    printf '%s\n' "$branch"
 }
 
 git_branch_exists() {

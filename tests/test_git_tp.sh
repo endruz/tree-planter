@@ -167,6 +167,18 @@ root = \"$worktree_root\""
     git -C "$TEST_REPO" worktree list --porcelain | grep -Fq 'branch refs/heads/feature/remote-topic' || { printf 'FAIL: qualified remote branch created a detached worktree\n' >&2; failures=$((failures + 1)); }
     assert_success run_git_tp remove feature/remote-topic
 
+    nested_remote_repo="$HOME/team-origin.git"
+    git init --bare -q "$nested_remote_repo"
+    git -C "$TEST_REPO" remote add team/origin "$nested_remote_repo"
+    git -C "$TEST_REPO" push -q team/origin feature/remote-topic
+    git -C "$TEST_REPO" fetch -q team/origin
+    git -C "$TEST_REPO" branch -Dq feature/remote-topic
+    assert_success run_git_tp add team/origin/feature/remote-topic
+    nested_target="$worktree_root/$(basename "$TEST_REPO")/feature/remote-topic"
+    [[ -d "$nested_target" ]] || { printf 'FAIL: slash-containing remote name created the wrong worktree path\n' >&2; failures=$((failures + 1)); }
+    git -C "$TEST_REPO" worktree list --porcelain | grep -Fq 'branch refs/heads/feature/remote-topic' || { printf 'FAIL: slash-containing remote name created the wrong local branch\n' >&2; failures=$((failures + 1)); }
+    assert_success run_git_tp remove feature/remote-topic
+
     assert_failure run_git_tp add --create-branch feature/demo
     assert_stderr_contains 'already used by worktree'
 
