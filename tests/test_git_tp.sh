@@ -138,6 +138,26 @@ root = \"$worktree_root\""
     [[ -d "$target" ]] || { printf 'FAIL: target worktree was not created\n' >&2; failures=$((failures + 1)); }
     git -C "$TEST_REPO" show-ref --verify --quiet refs/heads/feature/demo || { printf 'FAIL: branch was not created\n' >&2; failures=$((failures + 1)); }
 
+    remote_repo="$HOME/origin.git"
+    git init --bare -q "$remote_repo"
+    git -C "$TEST_REPO" remote add origin "$remote_repo"
+    current_branch=$(git -C "$TEST_REPO" branch --show-current)
+    git -C "$TEST_REPO" switch -q -c remote-topic
+    git -C "$TEST_REPO" push -q origin remote-topic
+    git -C "$TEST_REPO" switch -q "$current_branch"
+    git -C "$TEST_REPO" branch -Dq remote-topic
+    git -C "$TEST_REPO" fetch -q origin
+    assert_success run_git_tp add remote-topic
+    assert_stderr_not_contains 'cd: --: invalid option'
+    remote_target="$worktree_root/$(basename "$TEST_REPO")/remote-topic"
+    [[ -d "$remote_target" ]] || { printf 'FAIL: remote branch worktree was not created\n' >&2; failures=$((failures + 1)); }
+    remote_head=$(git -C "$TEST_REPO" rev-parse refs/remotes/origin/remote-topic)
+    worktree_head=$(git -C "$remote_target" rev-parse HEAD)
+    [[ "$worktree_head" == "$remote_head" ]] || { printf 'FAIL: worktree was not created from remote branch\n' >&2; failures=$((failures + 1)); }
+    assert_success run_git_tp add origin/remote-topic
+    qualified_target="$worktree_root/$(basename "$TEST_REPO")/origin/remote-topic"
+    [[ -d "$qualified_target" ]] || { printf 'FAIL: qualified remote branch worktree was not created\n' >&2; failures=$((failures + 1)); }
+
     assert_failure run_git_tp add --create-branch feature/demo
     assert_stderr_contains 'already used by worktree'
 

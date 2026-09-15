@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 
 git_branch_exists() {
-    git show-ref --verify --quiet "refs/heads/$1"
+    local remote_ref remote_count=0
+    git show-ref --verify --quiet "refs/heads/$1" || git show-ref --verify --quiet "refs/remotes/$1" && return 0
+    while IFS= read -r remote_ref; do
+        remote_count=$((remote_count + 1))
+    done < <(git for-each-ref --format='%(refname)' "refs/remotes/*/$1")
+    (( remote_count == 1 ))
 }
 
 git_branch_in_use() {

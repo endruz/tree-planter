@@ -44,7 +44,7 @@ git tp remove [-f|--force] <branch>
 git tp cleanup
 ```
 
-`add` creates a linked worktree and may create a missing local branch from the caller's current `HEAD`. `remove` only targets linked worktrees and protects the main worktree and uncommitted changes unless `--force` is used. `cleanup` prunes Git's stale worktree records and never deletes an existing worktree directory.
+`add` creates a linked worktree from a local or remote-tracking branch and may create a missing local branch from the caller's current `HEAD`. `remove` only targets linked worktrees and protects the main worktree and uncommitted changes unless `--force` is used. `cleanup` prunes Git's stale worktree records and never deletes an existing worktree directory.
 
 ## Hooks
 
