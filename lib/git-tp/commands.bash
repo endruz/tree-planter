@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 command_add() {
-    local create_branch=false branch arg
+    local create_branch=false branch arg remote_ref
     while (($# > 0)); do
         arg=$1
         shift
@@ -18,13 +18,22 @@ command_add() {
     [[ -n ${branch:-} ]] || fail 'add requires a branch'
 
     path_validate_branch "$branch"
+    remote_ref=''
+    if ! git show-ref --verify --quiet "refs/heads/$branch"; then
+        remote_ref=$(git_remote_branch_ref "$branch" 2>/dev/null || true)
+        if [[ -n "$remote_ref" ]]; then
+            branch=${branch##*/}
+        fi
+    fi
     if git_branch_in_use "$branch"; then
         fail "branch is already used by worktree: $GIT_TP_BRANCH_WORKTREE"
     fi
     path_resolve_worktree "$branch"
 
     local new_branch=false
-    if ! git_branch_exists "$branch"; then
+    if [[ -n "$remote_ref" ]] && ! git show-ref --verify --quiet "refs/heads/$branch"; then
+        new_branch=true
+    elif ! git_branch_exists "$branch"; then
         if [[ "$create_branch" != true ]]; then
             if [[ -t 0 && -t 1 ]]; then
                 printf 'Create it from current HEAD? [y/N] '
@@ -45,7 +54,7 @@ command_add() {
 
     mkdir -p "$(dirname "$GIT_TP_TARGET_WORKTREE")" || fail "unable to create target parent directory"
     if [[ "$new_branch" == true ]]; then
-        if ! git_create_branch "$branch"; then
+        if ! git_create_branch "$branch" "$remote_ref"; then
             fail "unable to create branch: $branch"
         fi
     fi

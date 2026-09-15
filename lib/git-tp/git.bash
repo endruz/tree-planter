@@ -1,12 +1,24 @@
 #!/usr/bin/env bash
 
-git_branch_exists() {
-    local remote_ref remote_count=0
-    git show-ref --verify --quiet "refs/heads/$1" || git show-ref --verify --quiet "refs/remotes/$1" && return 0
+git_remote_branch_ref() {
+    local branch=$1 remote_ref remote_count=0 remote_match=''
+    if git show-ref --verify --quiet "refs/remotes/$branch"; then
+        printf 'refs/remotes/%s\n' "$branch"
+        return 0
+    fi
     while IFS= read -r remote_ref; do
         remote_count=$((remote_count + 1))
-    done < <(git for-each-ref --format='%(refname)' "refs/remotes/*/$1")
-    (( remote_count == 1 ))
+        remote_match=$remote_ref
+    done < <(git for-each-ref --format='%(refname)' "refs/remotes/*/$branch")
+    if (( remote_count == 1 )); then
+        printf '%s\n' "$remote_match"
+        return 0
+    fi
+    return 1
+}
+
+git_branch_exists() {
+    git show-ref --verify --quiet "refs/heads/$1" || git_remote_branch_ref "$1" >/dev/null
 }
 
 git_branch_in_use() {
@@ -27,7 +39,7 @@ git_branch_in_use() {
 }
 
 git_create_branch() {
-    git branch -- "$1" "$GIT_TP_CURRENT_HEAD"
+    git branch -- "$1" "${2:-$GIT_TP_CURRENT_HEAD}"
 }
 
 git_delete_branch() {
