@@ -52,10 +52,18 @@ path_resolve_worktree() {
 
 path_find_worktree_for_branch() {
     local branch=$1
-    local worktree current_branch worktree_list
+    local worktree current_branch worktree_list remote_ref
     [[ "$branch" != refs/* ]] || fail "remove accepts only local branch names: $branch"
     if ! git show-ref --verify --quiet "refs/heads/$branch"; then
         [[ "$branch" != origin/* ]] || fail "remove accepts only local branch names: $branch"
+        if remote_ref=$(git_remote_branch_ref "$branch" 2>/dev/null); then
+            fail "remove accepts only local branch names: $branch"
+        else
+            case "$?" in
+                2) fail "remove accepts only local branch names: $branch" ;;
+                3) fail 'unable to inspect remotes' ;;
+            esac
+        fi
     fi
     GIT_TP_FOUND_WORKTREE=''
     worktree_list=$(git worktree list --porcelain) || return 2

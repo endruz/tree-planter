@@ -184,6 +184,8 @@ root = \"$worktree_root\""
     git -C "$TEST_REPO" branch -Dq feature/remote-topic
     assert_failure run_git_tp add feature/remote-topic
     assert_stderr_contains 'ambiguous remote branch'
+    assert_failure run_git_tp remove team/origin/feature/remote-topic
+    assert_stderr_contains 'only local branch names'
     assert_success run_git_tp add team/origin/feature/remote-topic
     nested_target="$worktree_root/$(basename "$TEST_REPO")/feature/remote-topic"
     [[ -d "$nested_target" ]] || { printf 'FAIL: slash-containing remote name created the wrong worktree path\n' >&2; failures=$((failures + 1)); }
