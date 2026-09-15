@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 command_add() {
-    local create_branch=false branch arg
+    local create_branch=false branch arg remote_ref requested_branch remote_branch_name local_head remote_head
     while (($# > 0)); do
         arg=$1
         shift
@@ -17,27 +17,72 @@ command_add() {
     done
     [[ -n ${branch:-} ]] || fail 'add requires a branch'
 
+    requested_branch=$branch
     path_validate_branch "$branch"
+    remote_ref=''
+    if ! git show-ref --verify --quiet "refs/heads/$branch"; then
+        if remote_ref=$(git_remote_branch_ref "$branch" 2>/dev/null); then
+            :
+        else
+            case "$?" in
+                2) fail "ambiguous remote branch: $branch; use a qualified remote/branch name" ;;
+                3) fail 'unable to inspect remotes' ;;
+                *) remote_ref='' ;;
+            esac
+        fi
+        if [[ -n "$remote_ref" ]]; then
+            if remote_branch_name=$(git_remote_branch_name "$remote_ref"); then
+                branch=$remote_branch_name
+            else
+                case "$?" in
+                    3) fail 'unable to inspect remotes' ;;
+                    *) fail "unable to resolve remote branch: $requested_branch" ;;
+                esac
+            fi
+            if git show-ref --verify --quiet "refs/heads/$branch"; then
+                local_head=$(git rev-parse "refs/heads/$branch") || fail "unable to resolve local branch: $branch"
+                remote_head=$(git rev-parse "$remote_ref") || fail "unable to resolve remote branch: $requested_branch"
+                [[ "$local_head" == "$remote_head" ]] ||
+                    fail "local branch already exists for remote branch: $branch"
+            fi
+        fi
+    fi
     if git_branch_in_use "$branch"; then
         fail "branch is already used by worktree: $GIT_TP_BRANCH_WORKTREE"
+    else
+        case "$?" in
+            2) fail 'unable to inspect worktrees' ;;
+        esac
     fi
     path_resolve_worktree "$branch"
 
     local new_branch=false
-    if ! git_branch_exists "$branch"; then
-        if [[ "$create_branch" != true ]]; then
-            if [[ -t 0 && -t 1 ]]; then
-                printf 'Create it from current HEAD? [y/N] '
-                read -r answer || answer=''
-                case "$answer" in
-                    y|yes) ;;
-                    *) fail "branch does not exist: $branch" ;;
-                esac
-            else
-                fail "branch does not exist; use --create-branch: $branch"
-            fi
-        fi
+    if [[ -n "$remote_ref" ]] && ! git show-ref --verify --quiet "refs/heads/$branch"; then
         new_branch=true
+    else
+        if git_branch_exists "$branch"; then
+            :
+        else
+            case "$?" in
+                1) ;;
+                2) fail "ambiguous remote branch: $branch; use a qualified remote/branch name" ;;
+                3) fail 'unable to inspect remotes' ;;
+                *) fail "unable to inspect branch: $branch" ;;
+            esac
+            if [[ "$create_branch" != true ]]; then
+                if [[ -t 0 && -t 1 ]]; then
+                    printf 'Create it from current HEAD? [y/N] '
+                    read -r answer || answer=''
+                    case "$answer" in
+                        y|yes) ;;
+                        *) fail "branch does not exist: $branch" ;;
+                    esac
+                else
+                    fail "branch does not exist; use --create-branch: $branch"
+                fi
+            fi
+            new_branch=true
+        fi
     fi
 
     GIT_TP_ACTIVE_COMMAND=add
@@ -45,7 +90,7 @@ command_add() {
 
     mkdir -p "$(dirname "$GIT_TP_TARGET_WORKTREE")" || fail "unable to create target parent directory"
     if [[ "$new_branch" == true ]]; then
-        if ! git_create_branch "$branch"; then
+        if ! git_create_branch "$branch" "$remote_ref"; then
             fail "unable to create branch: $branch"
         fi
     fi
@@ -79,8 +124,13 @@ command_remove() {
     done
     [[ -n ${branch:-} ]] || fail 'remove requires a branch'
     path_validate_branch "$branch"
-    if ! path_find_worktree_for_branch "$branch"; then
-        fail "no worktree found for branch: $branch"
+    if path_find_worktree_for_branch "$branch"; then
+        :
+    else
+        case "$?" in
+            2) fail 'unable to inspect worktrees' ;;
+            *) fail "no worktree found for branch: $branch" ;;
+        esac
     fi
     [[ "$GIT_TP_FOUND_WORKTREE" != "$GIT_TP_REPOSITORY" ]] || fail 'cannot remove the main worktree'
     if path_is_inside "$GIT_TP_CURRENT_WORKTREE" "$GIT_TP_FOUND_WORKTREE"; then

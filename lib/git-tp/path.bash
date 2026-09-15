@@ -21,13 +21,15 @@ path_load_hook_paths() {
 
 path_resolve_worktree() {
     local branch=$1
-    local repository_slot target existing_git existing_root existing_common
+    local repository_slot target existing_git existing_root existing_common repository_entries
     path_validate_branch "$branch"
     repository_slot="$GIT_TP_ROOT/$GIT_TP_REPOSITORY_NAME"
     target="$repository_slot/$branch"
     GIT_TP_TARGET_WORKTREE=$(realpath -m -- "$target")
     repository_slot=$(realpath -m -- "$repository_slot")
     if [[ -d "$repository_slot" ]]; then
+        repository_entries=$(find "$repository_slot" -name .git \( -type f -o -type d \) -print 2>/dev/null) ||
+            fail "unable to inspect repository directory: $repository_slot"
         while IFS= read -r existing_git; do
             existing_root=$(dirname "$existing_git")
             existing_common=$(git -C "$existing_root" rev-parse --git-common-dir 2>/dev/null || true)
@@ -39,7 +41,7 @@ path_resolve_worktree() {
             if [[ -n "$existing_common" && "$(realpath -m -- "$existing_common")" != "$GIT_TP_COMMON_DIR" ]]; then
                 fail "repository directory name collision: $repository_slot is used by $(git -C "$existing_root" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$existing_root")"
             fi
-        done < <(find "$repository_slot" -type f -name .git -print 2>/dev/null)
+        done <<< "$repository_entries"
     fi
     case "$GIT_TP_TARGET_WORKTREE/" in
         "$repository_slot"/*) ;;
@@ -50,8 +52,21 @@ path_resolve_worktree() {
 
 path_find_worktree_for_branch() {
     local branch=$1
-    local worktree current_branch
-    [[ "$branch" != refs/* && "$branch" != origin/* ]] || fail "remove accepts only local branch names: $branch"
+    local worktree current_branch worktree_list remote_ref
+    [[ "$branch" != refs/* ]] || fail "remove accepts only local branch names: $branch"
+    if ! git show-ref --verify --quiet "refs/heads/$branch"; then
+        [[ "$branch" != origin/* ]] || fail "remove accepts only local branch names: $branch"
+        if remote_ref=$(git_remote_branch_ref "$branch" 2>/dev/null); then
+            fail "remove accepts only local branch names: $branch"
+        else
+            case "$?" in
+                2) fail "remove accepts only local branch names: $branch" ;;
+                3) fail 'unable to inspect remotes' ;;
+            esac
+        fi
+    fi
+    GIT_TP_FOUND_WORKTREE=''
+    worktree_list=$(git worktree list --porcelain) || return 2
     worktree=''
     current_branch=''
     while IFS= read -r line; do
@@ -65,7 +80,7 @@ path_find_worktree_for_branch() {
                 fi
                 ;;
         esac
-    done < <(git worktree list --porcelain)
+    done <<< "$worktree_list"
     return 1
 }
 
