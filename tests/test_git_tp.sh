@@ -391,6 +391,45 @@ post-hook = \"hooks/cleanup.sh\""
     test_end
 }
 
+run_nested_root_tests() {
+    test_name=nested-root
+    test_home=$(mktemp -d)
+    export HOME="$test_home"
+    export TEST_REPO="$test_home/repo"
+    mkdir -p "$TEST_REPO"
+    git init --separate-git-dir "$test_home/git" -q "$TEST_REPO"
+    git -C "$TEST_REPO" config user.email test@example.com
+    git -C "$TEST_REPO" config user.name Test
+    printf 'initial\n' > "$TEST_REPO/README"
+    git -C "$TEST_REPO" add README
+    git -C "$TEST_REPO" commit -qm initial
+    mkdir -p "$TEST_REPO/nested"
+    printf '#!/usr/bin/env bash\nprintf "%%s|%%s|%%s|%%s|%%s\\n" "$GIT_TP_COMMAND" "$GIT_TP_REPOSITORY" "$GIT_TP_WORKTREE" "$GIT_TP_BRANCH" "$PWD" >> "$GIT_TP_REPOSITORY/hook.log"\n' > "$TEST_REPO/hooks.sh"
+    chmod +x "$TEST_REPO/hooks.sh"
+    worktree_root="$HOME/worktrees"
+    write_config "[worktree]
+root = \"$worktree_root\"
+
+[add.hooks]
+pre-hook = \"hooks.sh\""
+
+    assert_success run_git_tp add --create-branch feature/nested-root
+    target="$worktree_root/$(basename "$TEST_REPO")/feature/nested-root"
+    assert_success run_git_tp remove feature/nested-root
+    git -C "$TEST_REPO" branch -Dq feature/nested-root
+    assert_success run_git_tp_from "$TEST_REPO/nested" add --create-branch feature/nested-root
+    [[ -d "$target" ]] || { printf 'FAIL: root and nested invocations used different worktree slots\n' >&2; failures=$((failures + 1)); }
+    hook_count=$(wc -l < "$TEST_REPO/hook.log")
+    [[ "$hook_count" -eq 2 ]] || { printf 'FAIL: expected one hook invocation per working directory, got %s\n' "$hook_count" >&2; failures=$((failures + 1)); }
+    root_hook=$(sed -n '1p' "$TEST_REPO/hook.log")
+    nested_hook=$(sed -n '2p' "$TEST_REPO/hook.log")
+    [[ "$root_hook" == "$nested_hook" ]] || {
+        printf 'FAIL: root and nested invocations passed different hook parameters\nroot: %s\nnested: %s\n' "$root_hook" "$nested_hook" >&2
+        failures=$((failures + 1))
+    }
+    test_end
+}
+
 case "$MODE" in
     cli)
         run_cli_tests
@@ -404,6 +443,9 @@ case "$MODE" in
     hooks)
         run_hook_cleanup_tests
         ;;
+    nested-root)
+        run_nested_root_tests
+        ;;
     legacy-git)
         run_legacy_git_tests
         ;;
@@ -412,6 +454,7 @@ case "$MODE" in
         run_config_tests
         run_command_tests
         run_hook_cleanup_tests
+        run_nested_root_tests
         run_legacy_git_tests
         ;;
     *)
