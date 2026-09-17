@@ -46,22 +46,54 @@ git_branch_exists() {
     git_remote_branch_ref "$1" >/dev/null
 }
 
-git_branch_in_use() {
-    local branch=$1 worktree line current='' worktree_list
-    worktree_list=$(git worktree list --porcelain) || return 2
+git_worktree_path() {
+    local branch=${1:-} line worktree worktree_list current
+    worktree_list=$(git -C "$GIT_TP_CURRENT_WORKTREE" worktree list --porcelain) || return 2
     while IFS= read -r line; do
         case "$line" in
-            'worktree '*) worktree=${line#worktree } ;;
+            'worktree '*)
+                worktree=${line#worktree }
+                if [[ -z "$branch" ]]; then
+                    printf '%s\n' "$worktree"
+                    return 0
+                fi
+                ;;
             'branch refs/heads/'*)
                 current=${line#branch refs/heads/}
                 if [[ "$current" == "$branch" ]]; then
-                    GIT_TP_BRANCH_WORKTREE=$worktree
+                    printf '%s\n' "$worktree"
                     return 0
                 fi
                 ;;
         esac
     done <<< "$worktree_list"
     return 1
+}
+
+git_worktree_path_checked() {
+    local branch=$1 worktree
+    worktree=$(git_worktree_path "$branch")
+    case "$?" in
+        2) return 2 ;;
+        1) return 1 ;;
+    esac
+    printf '%s\n' "$worktree"
+}
+
+git_main_worktree() {
+    git_worktree_path
+}
+
+git_main_worktree_path() {
+    local worktree=$1
+    [[ "$worktree" == "$GIT_TP_COMMON_DIR" ]] && worktree=$GIT_TP_MAIN_REPOSITORY
+    printf '%s\n' "$worktree"
+}
+
+git_branch_in_use() {
+    local branch=$1 worktree
+    worktree=$(git_worktree_path_checked "$branch") || return $?
+    GIT_TP_BRANCH_WORKTREE=$(git_main_worktree_path "$worktree")
 }
 
 git_create_branch() {

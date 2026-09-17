@@ -267,7 +267,7 @@ if [[ "\$*" == *"rev-parse --path-format=absolute --git-common-dir"* ]]; then
     printf '%s\n' --
     exit 0
 fi
-if [[ "\${FAIL_WORKTREE_LIST:-}" == 1 && "\$*" == "worktree list --porcelain" ]]; then
+if [[ "\${FAIL_WORKTREE_LIST:-}" == 1 && "\$*" == *"worktree list --porcelain"* ]]; then
     exit 42
 fi
 if [[ "\${FAIL_REMOTE_LIST:-}" == 1 && "\$*" == "remote" ]]; then
@@ -415,6 +415,8 @@ pre-hook = \"hooks.sh\""
 
     assert_success run_git_tp add --create-branch feature/nested-root
     target="$worktree_root/$(basename "$TEST_REPO")/feature/nested-root"
+    assert_failure run_git_tp remove master
+    assert_stderr_contains 'main worktree'
     assert_success run_git_tp remove feature/nested-root
     git -C "$TEST_REPO" branch -Dq feature/nested-root
     assert_success run_git_tp_from "$TEST_REPO/nested" add --create-branch feature/nested-root
@@ -425,6 +427,45 @@ pre-hook = \"hooks.sh\""
     nested_hook=$(sed -n '2p' "$TEST_REPO/hook.log")
     [[ "$root_hook" == "$nested_hook" ]] || {
         printf 'FAIL: root and nested invocations passed different hook parameters\nroot: %s\nnested: %s\n' "$root_hook" "$nested_hook" >&2
+        failures=$((failures + 1))
+    }
+    linked_repo="$test_home/linked-repo"
+    git init -q "$linked_repo"
+    git -C "$linked_repo" config user.email test@example.com
+    git -C "$linked_repo" config user.name Test
+    printf 'linked\n' > "$linked_repo/README"
+    git -C "$linked_repo" add README
+    git -C "$linked_repo" commit -qm initial
+    linked_worktree="$test_home/linked-worktree"
+    git -C "$linked_repo" worktree add -q "$linked_worktree" -b linked-base
+    mkdir -p "$linked_worktree/nested"
+    printf '#!/usr/bin/env bash\nprintf "%%s|%%s|%%s|%%s|%%s\\n" "$GIT_TP_COMMAND" "$GIT_TP_REPOSITORY" "$GIT_TP_WORKTREE" "$GIT_TP_BRANCH" "$PWD" >> "$GIT_TP_REPOSITORY/hook.log"\n' > "$linked_repo/hooks.sh"
+    chmod +x "$linked_repo/hooks.sh"
+    write_config "[worktree]
+root = \"$worktree_root\"
+
+[add.hooks]
+pre-hook = \"hooks.sh\"
+
+[remove.hooks]
+pre-hook = \"hooks.sh\""
+    assert_success run_git_tp_from "$linked_worktree" add --create-branch feature/from-linked
+    linked_target="$worktree_root/$(basename "$linked_repo")/feature/from-linked"
+    assert_success run_git_tp_from "$linked_worktree" remove feature/from-linked
+    git -C "$linked_repo" branch -Dq feature/from-linked
+    assert_success run_git_tp_from "$linked_worktree/nested" add --create-branch feature/from-linked
+    [[ -d "$linked_target" ]] || { printf 'FAIL: linked-worktree invocations used different repository slots\n' >&2; failures=$((failures + 1)); }
+    assert_success run_git_tp_from "$linked_worktree/nested" remove feature/from-linked
+    linked_root_add_hook=$(sed -n '1p' "$linked_repo/hook.log")
+    linked_root_remove_hook=$(sed -n '2p' "$linked_repo/hook.log")
+    linked_nested_add_hook=$(sed -n '3p' "$linked_repo/hook.log")
+    linked_nested_remove_hook=$(sed -n '4p' "$linked_repo/hook.log")
+    [[ "$linked_root_add_hook" == "$linked_nested_add_hook" ]] || {
+        printf 'FAIL: linked-worktree root and nested add invocations passed different hook parameters\nroot: %s\nnested: %s\n' "$linked_root_add_hook" "$linked_nested_add_hook" >&2
+        failures=$((failures + 1))
+    }
+    [[ "$linked_root_remove_hook" == "$linked_nested_remove_hook" ]] || {
+        printf 'FAIL: linked-worktree root and nested remove invocations passed different hook parameters\nroot: %s\nnested: %s\n' "$linked_root_remove_hook" "$linked_nested_remove_hook" >&2
         failures=$((failures + 1))
     }
     test_end
