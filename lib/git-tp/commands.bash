@@ -132,7 +132,7 @@ command_remove() {
             *) fail "no worktree found for branch: $branch" ;;
         esac
     fi
-    [[ "$GIT_TP_FOUND_WORKTREE" != "$GIT_TP_REPOSITORY" ]] || fail 'cannot remove the main worktree'
+    [[ "$GIT_TP_FOUND_WORKTREE" != "$GIT_TP_MAIN_REPOSITORY" ]] || fail 'cannot remove the main worktree'
     if path_is_inside "$GIT_TP_CURRENT_WORKTREE" "$GIT_TP_FOUND_WORKTREE"; then
         fail 'cannot remove a worktree while inside it'
     fi

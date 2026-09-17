@@ -1,10 +1,32 @@
 #!/usr/bin/env bash
 
+path_absolute() {
+    local path=$1 base=${2:-}
+    [[ "$path" == /* ]] || path="${base:-$PWD}/$path"
+    realpath -m -- "$path"
+}
+
 path_validate_branch() {
     local branch=$1
     [[ -n "$branch" ]] || fail 'branch is required'
     [[ "$branch" != -* && "$branch" != /* ]] || fail "invalid branch name: $branch"
     git check-ref-format --branch "$branch" >/dev/null 2>&1 || fail "invalid branch name: $branch"
+}
+
+path_validate_remove_branch() {
+    local branch=$1 remote_ref remote_status
+    [[ "$branch" != refs/* ]] || fail "remove accepts only local branch names: $branch"
+    git show-ref --verify --quiet "refs/heads/$branch" && return 0
+    [[ "$branch" != origin/* ]] || fail "remove accepts only local branch names: $branch"
+    remote_ref=$(git_remote_branch_ref "$branch" 2>/dev/null)
+    remote_status=$?
+    if (( remote_status == 0 )); then
+        fail "remove accepts only local branch names: $branch"
+    fi
+    case "$remote_status" in
+        2) fail "remove accepts only local branch names: $branch" ;;
+        3) fail 'unable to inspect remotes' ;;
+    esac
 }
 
 path_load_hook_paths() {
@@ -34,11 +56,8 @@ path_resolve_worktree() {
             existing_root=$(dirname "$existing_git")
             existing_common=$(git -C "$existing_root" rev-parse --git-common-dir 2>/dev/null || true)
             [[ -n "$existing_common" ]] || continue
-            case "$existing_common" in
-                /*) ;;
-                *) existing_common="$existing_root/$existing_common" ;;
-            esac
-            if [[ -n "$existing_common" && "$(realpath -m -- "$existing_common")" != "$GIT_TP_COMMON_DIR" ]]; then
+            existing_common=$(path_absolute "$existing_common" "$existing_root")
+            if [[ -n "$existing_common" && "$existing_common" != "$GIT_TP_COMMON_DIR" ]]; then
                 fail "repository directory name collision: $repository_slot is used by $(git -C "$existing_root" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$existing_root")"
             fi
         done <<< "$repository_entries"
@@ -52,36 +71,11 @@ path_resolve_worktree() {
 
 path_find_worktree_for_branch() {
     local branch=$1
-    local worktree current_branch worktree_list remote_ref
-    [[ "$branch" != refs/* ]] || fail "remove accepts only local branch names: $branch"
-    if ! git show-ref --verify --quiet "refs/heads/$branch"; then
-        [[ "$branch" != origin/* ]] || fail "remove accepts only local branch names: $branch"
-        if remote_ref=$(git_remote_branch_ref "$branch" 2>/dev/null); then
-            fail "remove accepts only local branch names: $branch"
-        else
-            case "$?" in
-                2) fail "remove accepts only local branch names: $branch" ;;
-                3) fail 'unable to inspect remotes' ;;
-            esac
-        fi
-    fi
+    local worktree
+    path_validate_remove_branch "$branch"
     GIT_TP_FOUND_WORKTREE=''
-    worktree_list=$(git worktree list --porcelain) || return 2
-    worktree=''
-    current_branch=''
-    while IFS= read -r line; do
-        case "$line" in
-            'worktree '*) worktree=${line#worktree } ;;
-            'branch refs/heads/'*)
-                current_branch=${line#branch refs/heads/}
-                if [[ "$current_branch" == "$branch" ]]; then
-                    GIT_TP_FOUND_WORKTREE=$worktree
-                    return 0
-                fi
-                ;;
-        esac
-    done <<< "$worktree_list"
-    return 1
+    worktree=$(git_worktree_path_checked "$branch") || return $?
+                    GIT_TP_FOUND_WORKTREE=$(git_main_worktree_path "$worktree")
 }
 
 path_is_inside() {
