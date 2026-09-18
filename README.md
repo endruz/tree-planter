@@ -81,4 +81,4 @@ bash tests/test_git_tp.sh
 ```
 
 Pull requests targeting `main` run the same suite in GitHub Actions.
-Configure the `test` check as a required status check in the `main` branch protection rules before allowing merges.
+Configure the `Tests/test` check as a required status check in the `main` branch protection rules before allowing merges.
