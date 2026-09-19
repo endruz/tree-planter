@@ -106,7 +106,9 @@ run_config_tests() {
     test_start config
     write_config '[worktree]
 root = "~/worktrees"'
-    assert_failure run_git_tp add main
+    assert_success run_git_tp add --create-branch feature/home-root
+    home_root_target="$HOME/worktrees/$(basename "$TEST_REPO")/feature/home-root"
+    [[ -d "$home_root_target" ]] || { printf 'FAIL: tilde root was not expanded\n' >&2; failures=$((failures + 1)); }
     assert_stderr_not_contains 'root must be a string'
     assert_stderr_not_contains 'unknown configuration'
     assert_stderr_not_contains 'root is required'
