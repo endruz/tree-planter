@@ -63,7 +63,7 @@ config_load() {
     if [[ $GIT_TP_ROOT == '~' ]]; then
         GIT_TP_ROOT=$HOME
     elif [[ ${GIT_TP_ROOT:0:2} == '~/' ]]; then
-        GIT_TP_ROOT="$HOME/${GIT_TP_ROOT#~/}"
+        GIT_TP_ROOT="$HOME/${GIT_TP_ROOT:2}"
     fi
     [[ $GIT_TP_ROOT == /* ]] || fail 'worktree.root must be an absolute path or start with ~/'
 }
