@@ -38,6 +38,8 @@ done
 
 temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/git-tp-install.XXXXXX")
 archive="$temp_dir/source.tar.gz"
+members_file="$temp_dir/members"
+details_file="$temp_dir/details"
 extracted_dir="$temp_dir/source"
 staging_dir="$install_dir/.git-tp-staging.$$"
 backup_dir="$install_dir/.git-tp-backup.$$"
@@ -85,6 +87,22 @@ trap handle_sigterm 15
 mkdir -p "$install_dir/bin" "$install_dir/lib"
 mkdir -p "$extracted_dir" "$staging_dir" "$backup_dir/bin" "$backup_dir/lib"
 curl -fsSL "$source_url" -o "$archive" || fail "unable to download source: $source_url"
+tar -tzf "$archive" > "$members_file" || fail 'unable to inspect source archive'
+tar -tvzf "$archive" > "$details_file" || fail 'unable to inspect source archive'
+while IFS= read -r entry; do
+    case "$entry" in
+        -*) ;;
+        d*) ;;
+        *) fail "unsafe archive member: $entry" ;;
+    esac
+done < "$details_file"
+while IFS= read -r member; do
+    case "$member" in
+        /*|../*|*/../*|*/..|..)
+            fail "unsafe archive member: $member"
+            ;;
+    esac
+done < "$members_file"
 tar -xzf "$archive" -C "$extracted_dir" || fail 'unable to extract source archive'
 
 source_bin=$(find "$extracted_dir" -type f -path '*/bin/git-tp' -print -quit)

@@ -46,6 +46,29 @@ env -u HOME GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir 
 }
 [[ -x "$home_unset_prefix/bin/git-tp" ]] || fail 'custom install with HOME unset is missing executable'
 
+symlink_root="$TEST_HOME/symlink-source"
+symlink_archive="$TEST_HOME/symlink.tar.gz"
+mkdir -p "$symlink_root"
+cp -R "$ROOT_DIR/bin" "$ROOT_DIR/lib" "$symlink_root/"
+ln -s /tmp/git-tp-outside "$symlink_root/lib/git-tp/outside-link"
+tar -czf "$symlink_archive" -C "$symlink_root" bin lib
+GIT_TP_SOURCE_URL="file://$symlink_archive" bash "$INSTALLER" --install-dir "$PREFIX" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" && fail 'installer accepted a symlink archive member'
+grep -Fq 'unsafe archive member' "$TEST_HOME/stderr" || fail 'installer did not identify symlink archive member'
+[[ "$($PREFIX/bin/git-tp --version)" == 'git-tp 0.1.0' ]] || fail 'symlink archive damaged the existing installation'
+
+malicious_root="$TEST_HOME/malicious"
+malicious_archive="$TEST_HOME/malicious.tar.gz"
+mkdir -p "$malicious_root"
+printf 'malicious\n' > "$malicious_root/payload"
+tar -cf "$TEST_HOME/malicious.tar" -C "$ROOT_DIR" bin lib
+tar --transform='s,^payload,../escape,' --append -f "$TEST_HOME/malicious.tar" -C "$malicious_root" payload
+gzip -c "$TEST_HOME/malicious.tar" > "$malicious_archive"
+GIT_TP_SOURCE_URL="file://$malicious_archive" bash "$INSTALLER" --install-dir "$PREFIX" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" && fail 'installer accepted unsafe archive paths'
+grep -Fq 'unsafe archive member' "$TEST_HOME/stderr" || fail 'installer did not identify unsafe archive paths'
+[[ "$($PREFIX/bin/git-tp --version)" == 'git-tp 0.1.0' ]] || fail 'unsafe archive damaged the existing installation'
+
 GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$PREFIX" \
     >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {
     cat "$TEST_HOME/stderr" >&2
