@@ -38,6 +38,14 @@ grep -Fq "export PATH=\"$PREFIX/bin:\$PATH\"" "$TEST_HOME/stdout" || fail 'PATH 
 PATH="$PREFIX/bin:$PATH" git tp -h >"$TEST_HOME/stdout" || fail 'installed git tp -h failed'
 grep -Fq 'git tp add' "$TEST_HOME/stdout" || fail 'installed git tp --help output is incomplete'
 
+home_unset_prefix="$TEST_HOME/home-unset"
+env -u HOME GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$home_unset_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {
+    cat "$TEST_HOME/stderr" >&2
+    fail 'custom install directory required HOME'
+}
+[[ -x "$home_unset_prefix/bin/git-tp" ]] || fail 'custom install with HOME unset is missing executable'
+
 GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$PREFIX" \
     >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {
     cat "$TEST_HOME/stderr" >&2

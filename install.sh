@@ -10,7 +10,7 @@ fail() {
     exit 1
 }
 
-install_dir=${GIT_TP_INSTALL_DIR:-${HOME:?HOME must be set}/.local}
+install_dir=${GIT_TP_INSTALL_DIR:-}
 source_url=${GIT_TP_SOURCE_URL:-https://github.com/endruz/tree-planter/archive/refs/heads/main.tar.gz}
 
 while [ "$#" -gt 0 ]; do
@@ -29,6 +29,8 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+
+[ -n "$install_dir" ] || install_dir=${HOME:?HOME must be set}/.local
 
 for command_name in bash git realpath curl tar mktemp find cp mv rm dirname chmod mkdir; do
     command -v "$command_name" >/dev/null 2>&1 || fail "required command not found: $command_name"
