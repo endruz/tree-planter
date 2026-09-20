@@ -4,14 +4,49 @@
 
 ## Install
 
-Put `bin/git-tp` on `PATH`, for example:
+Install the latest source from GitHub into `~/.local`:
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
-ln -s "$PWD/bin/git-tp" "$HOME/.local/bin/git-tp"
+curl -fsSL https://raw.githubusercontent.com/endruz/tree-planter/main/install.sh | sh
 ```
 
-The runtime requires Bash, Git, and `realpath`.
+The installer requires Bash, Git, `curl`, `tar`, and these standard utilities:
+`realpath`, `mktemp`, `find`, `cp`, `mv`, `rm`, `dirname`, `chmod`, and `mkdir`.
+It installs:
+
+```text
+~/.local/bin/git-tp
+~/.local/lib/git-tp/
+```
+
+If `~/.local/bin` is not already on `PATH`, the installer prints the exact
+`export` command to add it. Verify the installation with:
+
+```bash
+git tp --version
+git tp -h
+```
+
+Git reserves `git tp --help` for its man-page lookup. Use `git tp -h` or
+`git-tp --help` to print the command help directly.
+
+To install into another prefix, use either form:
+
+```bash
+GIT_TP_INSTALL_DIR="$HOME/tools" sh install.sh
+sh install.sh --install-dir "$HOME/tools"
+```
+
+Running the installer again updates an existing installation.
+To uninstall the default installation:
+
+```bash
+rm -f "$HOME/.local/bin/git-tp"
+rm -rf "$HOME/.local/lib/git-tp"
+```
+
+The current installer follows `main`.
+Once a versioned GitHub Release is available, use its versioned installer URL to install a fixed release.
 
 ## Configuration
 

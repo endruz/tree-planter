@@ -23,4 +23,6 @@ jobs:
           git --version
 
       - name: Run integration tests
-        run: bash tests/test_git_tp.sh
+        run: |
+          bash tests/test_git_tp.sh
+          bash tests/test_installer.sh
