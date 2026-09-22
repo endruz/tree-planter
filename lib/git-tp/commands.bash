@@ -159,3 +159,56 @@ command_cleanup() {
     fi
     printf 'Cleaned up %s stale worktree record(s)\n' "$stale_count"
 }
+
+command_update() {
+    local check=false version='' arg source_file install_root installer source_url tag base
+    while (($# > 0)); do
+        arg=$1
+        shift
+        case "$arg" in
+            --check) check=true ;;
+            --version)
+                (($# > 0)) || fail '--version requires a version'
+                version=$1
+                [[ "$version" != -* ]] || fail '--version requires a value without a leading dash'
+                shift
+                ;;
+            --help|-h) print_command_help update; return 0 ;;
+            -*) fail "unknown update option: $arg" ;;
+            *) fail "unexpected update argument: $arg" ;;
+        esac
+    done
+
+    install_root=$(cd "$SCRIPT_DIR/.." && pwd)
+    source_file=$install_root/.git-tp-source
+    [[ -r "$source_file" ]] || fail 'installation source is unknown; reinstall with the supported installer'
+    source_url=$(<"$source_file")
+    [[ -n "$source_url" ]] || fail 'installation source metadata is empty; reinstall with the supported installer'
+    if [[ -n "$version" ]]; then
+        if [[ "$source_url" == *'{version}'* ]]; then
+            source_url=${source_url//\{version\}/$version}
+        elif [[ "$source_url" == */archive/refs/heads/*.tar.gz || "$source_url" == */archive/refs/tags/*.tar.gz ]]; then
+            tag=$version
+            [[ "$tag" == v* ]] || tag=v$tag
+            base=${source_url%/archive/refs/*/*.tar.gz}
+            source_url=$base/archive/refs/tags/$tag.tar.gz
+        elif [[ "$source_url" == */releases/download/*/* ]]; then
+            tag=$version
+            [[ "$tag" == v* ]] || tag=v$tag
+            base=${source_url%/releases/download/*}
+            source_url=$base/releases/download/$tag/${source_url##*/}
+        else
+            fail 'the configured update source does not support --version'
+        fi
+    fi
+
+    installer=$install_root/lib/git-tp/install.sh
+    [[ -x "$installer" ]] || fail 'installed update mechanism is missing; reinstall with the supported installer'
+    if [[ "$check" == true ]]; then
+        GIT_TP_SOURCE_URL=$source_url "$installer" --install-dir "$install_root" --check ||
+            fail 'update check failed; the previous installation was retained'
+    else
+        GIT_TP_SOURCE_URL=$source_url "$installer" --install-dir "$install_root" ||
+            fail 'update failed; the previous installation was retained'
+    fi
+}

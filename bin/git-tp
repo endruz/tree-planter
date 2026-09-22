@@ -19,6 +19,8 @@ Usage:
   git tp add [--create-branch] <branch>
   git tp remove [-f|--force] <branch>
   git tp cleanup
+    git tp update [--check]
+    git tp update --version <version>
   git tp --help
   git tp --version
 EOF
@@ -35,6 +37,9 @@ print_command_help() {
         cleanup)
             printf '%s\n' 'Usage: git tp cleanup'
             ;;
+        update)
+            printf '%s\n' 'Usage: git tp update [--check] [--version <version>]'
+            ;;
     esac
 }
 
@@ -42,6 +47,11 @@ fail() {
     printf 'git-tp: %s\n' "$1" >&2
     exit 1
 }
+
+INSTALL_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+if [[ -e "$INSTALL_ROOT/.git-tp.lock" ]]; then
+    fail 'installation is busy'
+fi
 
 if [[ ${1:-} == "--help" || ${1:-} == "-h" || $# -eq 0 ]]; then
     print_help
@@ -56,7 +66,7 @@ fi
 command_name=$1
 shift
 case "$command_name" in
-    add|remove|cleanup)
+    add|remove|cleanup|update)
         if [[ ${1:-} == "--help" || ${1:-} == "-h" ]]; then
             print_command_help "$command_name"
             exit 0
@@ -66,6 +76,11 @@ case "$command_name" in
         fail "unknown command: $command_name"
         ;;
 esac
+
+if [[ "$command_name" == update ]]; then
+    command_update "$@"
+    exit 0
+fi
 
 command -v realpath >/dev/null 2>&1 || fail 'required command not found: realpath'
 

@@ -11,7 +11,8 @@ curl -fsSL https://raw.githubusercontent.com/endruz/tree-planter/main/install.sh
 ```
 
 The installer requires Bash, Git, `curl`, `tar`, and these standard utilities:
-`realpath`, `mktemp`, `find`, `cp`, `mv`, `rm`, `dirname`, `chmod`, and `mkdir`.
+`realpath`, `mktemp`, `find`, `cp`, `mv`, `rm`, `dirname`, `chmod`, `mkdir`,
+`wc`, and `awk`.
 It installs:
 
 ```text
@@ -37,7 +38,28 @@ GIT_TP_INSTALL_DIR="$HOME/tools" sh install.sh
 sh install.sh --install-dir "$HOME/tools"
 ```
 
-Running the installer again updates an existing installation.
+Running the installer again updates an existing installation. Supported
+installations record their source in `~/.local/.git-tp-source`; update them
+without locating the repository again:
+
+```bash
+git tp update
+git tp update --check
+git tp update --version 0.1.0
+```
+
+The source must be a release-aware archive URL, or a URL containing
+`{version}` for `--version`. An update downloads and stages the source before
+replacing the executable and runtime; download, archive, permission, or source
+validation failures leave the previous installation usable. Configuration,
+hooks, and unrelated files are outside the replaced runtime and are preserved.
+Archives larger than 10 MiB, files larger than 10 MiB, or archives containing
+more than 50 MiB of files are rejected. Only one install or update may run at a
+time for an installation prefix.
+
+Installations without `.git-tp-source` were not created by the supported
+installer and must be reinstalled before they can be updated.
+
 To uninstall the default installation:
 
 ```bash
@@ -77,6 +99,8 @@ The worktree path is `<root>/<repository-name>/<branch>`. A leading `~/` is expa
 git tp add [--create-branch] <branch>
 git tp remove [-f|--force] <branch>
 git tp cleanup
+git tp update [--check]
+git tp update --version <version>
 ```
 
 - `add` creates a linked worktree from a local or remote-tracking branch. For a remote-tracking branch, it creates a corresponding local branch from the remote commit before creating the worktree. With `--create-branch`, a missing branch is created from the caller's current `HEAD`; in an interactive terminal, `add` can also ask for confirmation before doing so.
