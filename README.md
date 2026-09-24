@@ -83,6 +83,10 @@ Installations missing both `.git-tp/current/source` and the legacy
 supported installer first. Installations with only the legacy metadata can be
 updated and are migrated to the versioned layout.
 
+Legacy installations without a bundled installer must run `git tp update` once
+before `git tp update --check` is available. The check fails closed rather than
+executing an installer script from the source archive.
+
 To uninstall the default installation:
 
 ```bash

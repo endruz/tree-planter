@@ -13,6 +13,7 @@ fail() {
 install_dir=${GIT_TP_INSTALL_DIR:-}
 source_url=${GIT_TP_SOURCE_URL:-https://github.com/endruz/tree-planter/archive/refs/heads/main.tar.gz}
 download_url=${GIT_TP_DOWNLOAD_URL:-$source_url}
+staged_archive=${GIT_TP_ARCHIVE_FILE:-}
 check_only=false
 
 while [ "$#" -gt 0 ]; do
@@ -112,7 +113,12 @@ else
     printf '%s\n' "$$" > "$lock_dir/pid"
 fi
 mkdir -p "$extracted_dir" "$staging_dir"
-curl -fsSL "$download_url" -o "$archive" || fail "unable to download source: $download_url"
+if [ -n "$staged_archive" ]; then
+    archive=$staged_archive
+    [ -r "$archive" ] || fail 'staged source archive is not readable'
+else
+    curl -fsSL "$download_url" -o "$archive" || fail "unable to download source: $download_url"
+fi
 archive_bytes=$(wc -c < "$archive")
 [ "$archive_bytes" -le "$max_archive_bytes" ] || fail 'source archive is too large'
 tar -tzf "$archive" > "$members_file" || fail 'unable to inspect source archive'
@@ -149,9 +155,9 @@ source_root=$(dirname "$(dirname "$source_bin")")
 [ -f "$source_root/lib/git-tp/config.bash" ] || fail 'source archive does not contain lib/git-tp'
 [ -f "$source_root/install.sh" ] || fail 'source archive does not contain install.sh'
 
-cp "$source_bin" "$staging_dir/git-tp"
-cp -R "$source_root/lib/git-tp" "$staging_dir/git-tp-lib"
-cp "$source_root/install.sh" "$staging_dir/git-tp-lib/install.sh"
+cp "$source_bin" "$staging_dir/git-tp" || fail 'unable to stage source executable'
+cp -R "$source_root/lib/git-tp" "$staging_dir/git-tp-lib" || fail 'unable to stage source runtime'
+cp "$source_root/install.sh" "$staging_dir/git-tp-lib/install.sh" || fail 'unable to stage source installer'
 chmod +x "$staging_dir/git-tp"
 chmod +x "$staging_dir/git-tp-lib/install.sh"
 source_version=''
@@ -172,6 +178,12 @@ expected_version=${GIT_TP_EXPECTED_VERSION:-}
 if [ -n "$expected_version" ] && [ "$source_version" != "$expected_version" ]; then
     fail "requested version $expected_version does not match source version $source_version"
 fi
+bash -n "$staging_dir/git-tp" || fail 'source executable cannot be run'
+for runtime_module in config context path git hooks commands; do
+    runtime_file="$staging_dir/git-tp-lib/$runtime_module.bash"
+    [ -f "$runtime_file" ] || fail "source archive does not contain runtime file: ${runtime_file##*/}"
+    bash -n "$runtime_file" || fail "source runtime contains invalid shell syntax: ${runtime_file##*/}"
+done
 if [ "$check_only" = true ]; then
     current_version='not installed'
     if [ -x "$install_dir/bin/git-tp" ]; then
@@ -188,9 +200,8 @@ fi
 
 release_dir=$(mktemp -d "$install_dir/.git-tp/versions/release.XXXXXX")
 mkdir -p "$release_dir/bin" "$release_dir/lib"
-cp "$staging_dir/git-tp" "$release_dir/bin/git-tp"
-cp -R "$staging_dir/git-tp-lib" "$release_dir/lib/git-tp"
-bash -n "$release_dir/bin/git-tp" || fail 'source executable cannot be run'
+cp "$staging_dir/git-tp" "$release_dir/bin/git-tp" || fail 'unable to stage release executable'
+cp -R "$staging_dir/git-tp-lib" "$release_dir/lib/git-tp" || fail 'unable to stage release runtime'
 runtime_version=$(GIT_TP_INSTALL_ROOT= "$release_dir/bin/git-tp" --version) || fail 'source executable cannot be run'
 [ "$runtime_version" = "git-tp $source_version" ] || fail 'source executable version does not match its version declaration'
 printf '%s\n' "$source_url" > "$release_dir/source"

@@ -56,15 +56,47 @@ grep -Fq "export PATH=\"$PREFIX/bin:\$PATH\"" "$TEST_HOME/stdout" || fail 'PATH 
 PATH="$PREFIX/bin:$PATH" git tp -h >"$TEST_HOME/stdout" || fail 'installed git tp -h failed'
 grep -Fq 'git tp add' "$TEST_HOME/stdout" || fail 'installed git tp --help output is incomplete'
 
+copy_failure_bin="$TEST_HOME/copy-failure-bin"
+mkdir -p "$copy_failure_bin"
+real_cp=$(command -v cp)
+cat > "$copy_failure_bin/cp" <<EOF
+#!/bin/sh
+destination=''
+for argument do destination=\$argument; done
+case "\$destination" in
+    */.git-tp/versions/release.*/lib/git-tp) exit 1 ;;
+esac
+exec "$real_cp" "\$@"
+EOF
+chmod +x "$copy_failure_bin/cp"
+current_release_before_copy_failure=$(readlink "$PREFIX/.git-tp/current")
+if PATH="$copy_failure_bin:$PATH" "$PREFIX/bin/git-tp" update \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'update published a release after copying the runtime failed'
+fi
+grep -Fq 'unable to stage release runtime' "$TEST_HOME/stderr" ||
+    fail 'runtime copy failure did not report its staging error'
+[[ "$(readlink "$PREFIX/.git-tp/current")" == "$current_release_before_copy_failure" ]] ||
+    fail 'runtime copy failure changed the current release pointer'
+[[ "$("$PREFIX/bin/git-tp" --version)" == 'git-tp 0.1.0' ]] ||
+    fail 'runtime copy failure damaged the working installation'
+
 invalid_runtime_root="$TEST_HOME/invalid-runtime-source"
 mkdir -p "$invalid_runtime_root"
 cp -R "$ROOT_DIR/bin" "$ROOT_DIR/lib" "$invalid_runtime_root/"
 cp "$ROOT_DIR/install.sh" "$invalid_runtime_root/"
+sed -i 's/GIT_TP_VERSION="0.1.0"/GIT_TP_VERSION="0.2.0"/' "$invalid_runtime_root/bin/git-tp"
 printf '\nif then\n' >> "$invalid_runtime_root/bin/git-tp"
 invalid_runtime_archive="$TEST_HOME/invalid-runtime.tar.gz"
 tar -czf "$invalid_runtime_archive" -C "$invalid_runtime_root" bin lib install.sh
 previous_release=$(readlink "$PREFIX/.git-tp/current")
 printf 'file://%s\n' "$invalid_runtime_archive" > "$PREFIX/.git-tp/current/source"
+if "$PREFIX/bin/git-tp" update --check >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'update check accepted an unusable source executable'
+fi
+grep -Fq 'source executable cannot be run' "$TEST_HOME/stderr" || fail 'update check did not reject an invalid source executable'
+[[ "$(readlink "$PREFIX/.git-tp/current")" == "$previous_release" ]] || fail 'invalid source executable check changed the current release pointer'
+[[ "$("$PREFIX/bin/git-tp" --version)" == 'git-tp 0.1.0' ]] || fail 'invalid source executable check damaged the working installation'
 if "$PREFIX/bin/git-tp" update >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
     fail 'update accepted an unusable source executable'
 fi
@@ -79,6 +111,25 @@ cp "$ROOT_DIR/bin/git-tp" "$legacy_prefix/bin/git-tp"
 cp -R "$ROOT_DIR/lib/git-tp" "$legacy_prefix/lib/"
 printf 'file://%s\n' "$ARCHIVE" > "$legacy_prefix/.git-tp-source"
 [[ ! -e "$legacy_prefix/lib/git-tp/install.sh" ]] || fail 'legacy fixture unexpectedly contains an installed installer'
+
+legacy_check_root="$TEST_HOME/legacy-check-source"
+legacy_check_prefix="$TEST_HOME/legacy-check"
+mkdir -p "$legacy_check_root" "$legacy_check_prefix/bin" "$legacy_check_prefix/lib"
+cp -R "$ROOT_DIR/bin" "$ROOT_DIR/lib" "$legacy_check_root/"
+cp "$ROOT_DIR/install.sh" "$legacy_check_root/"
+sed -i '/^set -eu/a : > "$GIT_TP_TEST_INSTALLER_MARKER"' "$legacy_check_root/install.sh"
+tar -czf "$TEST_HOME/legacy-check-source.tar.gz" -C "$legacy_check_root" bin lib install.sh
+cp "$ROOT_DIR/bin/git-tp" "$legacy_check_prefix/bin/git-tp"
+cp -R "$ROOT_DIR/lib/git-tp" "$legacy_check_prefix/lib/"
+printf 'file://%s/legacy-check-source.tar.gz\n' "$TEST_HOME" > "$legacy_check_prefix/.git-tp-source"
+legacy_check_marker="$TEST_HOME/legacy-check-installer-marker"
+if GIT_TP_TEST_INSTALLER_MARKER="$legacy_check_marker" \
+    "$legacy_check_prefix/bin/git-tp" update --check >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'legacy update --check unexpectedly succeeded without a trusted installer'
+fi
+grep -Fq 'cannot safely check a legacy installation' "$TEST_HOME/stderr" || fail 'legacy update --check did not explain the safe migration path'
+[[ ! -e "$legacy_check_marker" ]] || fail 'legacy update --check executed install.sh from the source archive'
+
 if ! "$legacy_prefix/bin/git-tp" update >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
     cat "$TEST_HOME/stderr" >&2
     fail 'legacy installation without a bundled installer could not update'
@@ -133,10 +184,33 @@ if ! "$template_prefix/bin/git-tp" update --version 0.2.0 >"$TEST_HOME/stdout" 2
 fi
 [[ "$(<"$template_prefix/.git-tp/current/source")" == "$template_url" ]] || fail 'first update discarded the source version template'
 rm "$template_prefix/.git-tp/current/lib/git-tp/install.sh"
-if ! "$template_prefix/bin/git-tp" update --version 0.3.0 >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+template_release_before_copy_failure=$(readlink "$template_prefix/.git-tp/current")
+if PATH="$copy_failure_bin:$PATH" "$template_prefix/bin/git-tp" update --version 0.3.0 \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'bootstrap update published a release after copying the runtime failed'
+fi
+grep -Fq 'unable to stage release runtime' "$TEST_HOME/stderr" ||
+    fail 'bootstrap runtime copy failure did not report its staging error'
+[[ "$(readlink "$template_prefix/.git-tp/current")" == "$template_release_before_copy_failure" ]] ||
+    fail 'bootstrap runtime copy failure changed the current release pointer'
+[[ "$("$template_prefix/bin/git-tp" --version)" == 'git-tp 0.2.0' ]] ||
+    fail 'bootstrap runtime copy failure damaged the working installation'
+bootstrap_curl_bin="$TEST_HOME/bootstrap-curl-bin"
+bootstrap_curl_count="$TEST_HOME/bootstrap-curl-count"
+mkdir -p "$bootstrap_curl_bin"
+real_curl=$(command -v curl)
+cat > "$bootstrap_curl_bin/curl" <<EOF
+#!/bin/sh
+printf 'curl\n' >> "$bootstrap_curl_count"
+exec "$real_curl" "\$@"
+EOF
+chmod +x "$bootstrap_curl_bin/curl"
+if ! PATH="$bootstrap_curl_bin:$PATH" "$template_prefix/bin/git-tp" update --version 0.3.0 \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
     cat "$TEST_HOME/stderr" >&2
     fail 'second update from a version template failed after installer bootstrap'
 fi
+[[ "$(wc -l < "$bootstrap_curl_count")" -eq 1 ]] || fail 'bootstrap update downloaded its source archive more than once'
 [[ "$("$template_prefix/bin/git-tp" --version)" == 'git-tp 0.3.0' ]] || fail 'second template update did not install version 0.3.0'
 [[ "$(<"$template_prefix/.git-tp/current/source")" == "$template_url" ]] || fail 'second update discarded the source version template'
 template_current_release=$(readlink "$template_prefix/.git-tp/current")
