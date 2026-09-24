@@ -12,6 +12,7 @@ fail() {
 
 install_dir=${GIT_TP_INSTALL_DIR:-}
 source_url=${GIT_TP_SOURCE_URL:-https://github.com/endruz/tree-planter/archive/refs/heads/main.tar.gz}
+download_url=${GIT_TP_DOWNLOAD_URL:-$source_url}
 check_only=false
 
 while [ "$#" -gt 0 ]; do
@@ -37,7 +38,7 @@ done
 
 [ -n "$install_dir" ] || install_dir=${HOME:?HOME must be set}/.local
 
-for command_name in bash git realpath curl tar mktemp find cp mv rm dirname chmod mkdir wc awk; do
+for command_name in bash git realpath curl tar mktemp find cp mv rm dirname chmod mkdir wc awk grep readlink ln cat rmdir; do
     command -v "$command_name" >/dev/null 2>&1 || fail "required command not found: $command_name"
 done
 
@@ -50,16 +51,13 @@ archive="$temp_dir/source.tar.gz"
 members_file="$temp_dir/members"
 details_file="$temp_dir/details"
 extracted_dir="$temp_dir/source"
-staging_dir="$install_dir/.git-tp-staging.$$"
-backup_dir="$install_dir/.git-tp-backup.$$"
+staging_dir="$temp_dir/staging"
+release_dir=''
+release_published=0
+current_link=''
+launcher_file="$temp_dir/launcher"
 lock_dir="$install_dir/.git-tp.lock"
 lock_acquired=0
-backup_bin=0
-backup_lib=0
-backup_source=0
-installed_bin=0
-installed_lib=0
-installed_source=0
 interrupted=0
 
 handle_sigint() {
@@ -76,51 +74,45 @@ cleanup() {
     status=$?
     trap - 0 1 2 3 15
     if [ "$lock_acquired" -eq 1 ]; then
+        rm -f "$lock_dir/pid"
         rmdir "$lock_dir" 2>/dev/null || true
     fi
-    rm -rf "$staging_dir"
-    if [ "$interrupted" -eq 1 ] || [ "$status" -ne 0 ]; then
-        if [ "$backup_bin" -eq 1 ] && [ -e "$backup_dir/bin/git-tp" ]; then
-            rm -f "$install_dir/bin/git-tp"
-            mv "$backup_dir/bin/git-tp" "$install_dir/bin/git-tp"
-        elif [ "$installed_bin" -eq 1 ]; then
-            rm -f "$install_dir/bin/git-tp"
-        fi
-        if [ "$backup_lib" -eq 1 ] && [ -e "$backup_dir/lib/git-tp" ]; then
-            rm -rf "$install_dir/lib/git-tp"
-            mv "$backup_dir/lib/git-tp" "$install_dir/lib/git-tp"
-        elif [ "$installed_lib" -eq 1 ]; then
-            rm -rf "$install_dir/lib/git-tp"
-        fi
-        if [ "$backup_source" -eq 1 ] && [ -e "$backup_dir/source" ]; then
-            rm -f "$install_dir/.git-tp-source"
-            mv "$backup_dir/source" "$install_dir/.git-tp-source"
-        elif [ "$installed_source" -eq 1 ]; then
-            rm -f "$install_dir/.git-tp-source"
-        fi
+    if [ "$release_published" -eq 0 ] && [ -n "$release_dir" ]; then
+        published_target=$(readlink "$install_dir/.git-tp/current" 2>/dev/null || true)
+        [ "$published_target" = "versions/${release_dir##*/}" ] && release_published=1
     fi
-    rm -rf "$temp_dir" "$backup_dir"
+    if [ "$release_published" -eq 0 ] && [ -n "$release_dir" ]; then
+        rm -rf "$release_dir"
+    fi
+    [ -z "$current_link" ] || rm -f "$current_link"
+    rm -rf "$temp_dir"
     exit "$status"
 }
 trap cleanup 0
 trap handle_sigint 2
 trap handle_sigterm 15
 
+if [ "$check_only" != true ]; then
+    mkdir -p "$install_dir/bin" "$install_dir/.git-tp/versions"
+fi
+install_dir=$(realpath -m "$install_dir")
+lock_dir="$install_dir/.git-tp.lock"
 if [ "$check_only" = true ]; then
     if [ -e "$lock_dir" ]; then
-        fail 'installation is busy'
+        lock_owner=$(cat "$lock_dir/pid" 2>/dev/null || printf 'unknown')
+        fail "installation is busy (lock owner PID: $lock_owner); verify it is stale before removing $lock_dir"
     fi
-    staging_dir="$temp_dir/staging"
-    backup_dir="$temp_dir/backup"
 else
-    mkdir -p "$install_dir/bin" "$install_dir/lib"
+    mkdir -p "$install_dir/bin" "$install_dir/.git-tp/versions"
     if ! mkdir "$lock_dir" 2>/dev/null; then
-        fail 'installation is busy'
+        lock_owner=$(cat "$lock_dir/pid" 2>/dev/null || printf 'unknown')
+        fail "installation is busy (lock owner PID: $lock_owner); verify it is stale before removing $lock_dir"
     fi
     lock_acquired=1
+    printf '%s\n' "$$" > "$lock_dir/pid"
 fi
-mkdir -p "$extracted_dir" "$staging_dir" "$backup_dir/bin" "$backup_dir/lib"
-curl -fsSL "$source_url" -o "$archive" || fail "unable to download source: $source_url"
+mkdir -p "$extracted_dir" "$staging_dir"
+curl -fsSL "$download_url" -o "$archive" || fail "unable to download source: $download_url"
 archive_bytes=$(wc -c < "$archive")
 [ "$archive_bytes" -le "$max_archive_bytes" ] || fail 'source archive is too large'
 tar -tzf "$archive" > "$members_file" || fail 'unable to inspect source archive'
@@ -173,38 +165,62 @@ while IFS= read -r source_line || [ -n "$source_line" ]; do
     esac
 done < "$source_bin"
 [ -n "$source_version" ] || fail 'source executable does not contain a version declaration'
+case "$source_version" in
+    *[!A-Za-z0-9._+-]*) fail 'source executable contains an invalid version declaration' ;;
+esac
+expected_version=${GIT_TP_EXPECTED_VERSION:-}
+if [ -n "$expected_version" ] && [ "$source_version" != "$expected_version" ]; then
+    fail "requested version $expected_version does not match source version $source_version"
+fi
 if [ "$check_only" = true ]; then
     current_version='not installed'
     if [ -x "$install_dir/bin/git-tp" ]; then
-        current_version=$($install_dir/bin/git-tp --version)
+        current_version=$("$install_dir/bin/git-tp" --version)
     fi
+    current_version=${current_version#git-tp }
     if [ "$current_version" = "$source_version" ]; then
-        printf 'git-tp is up to date (%s)\n' "${current_version#git-tp }"
+        printf 'git-tp is up to date (%s)\n' "$current_version"
     else
-        printf 'update available: %s -> %s\n' "${current_version#git-tp }" "${source_version#git-tp }"
+        printf 'update available: %s -> %s\n' "$current_version" "$source_version"
     fi
     exit 0
 fi
 
-if [ -e "$install_dir/bin/git-tp" ]; then
-    backup_bin=1
-    mv "$install_dir/bin/git-tp" "$backup_dir/bin/git-tp"
+release_dir=$(mktemp -d "$install_dir/.git-tp/versions/release.XXXXXX")
+mkdir -p "$release_dir/bin" "$release_dir/lib"
+cp "$staging_dir/git-tp" "$release_dir/bin/git-tp"
+cp -R "$staging_dir/git-tp-lib" "$release_dir/lib/git-tp"
+bash -n "$release_dir/bin/git-tp" || fail 'source executable cannot be run'
+runtime_version=$(GIT_TP_INSTALL_ROOT= "$release_dir/bin/git-tp" --version) || fail 'source executable cannot be run'
+[ "$runtime_version" = "git-tp $source_version" ] || fail 'source executable version does not match its version declaration'
+printf '%s\n' "$source_url" > "$release_dir/source"
+cat > "$launcher_file" <<'EOF'
+#!/bin/sh
+set -eu
+# git-tp managed launcher v1
+install_root=$(CDPATH= cd "$(dirname "$0")/.." && pwd -P)
+current="$install_root/.git-tp/current"
+if [ ! -x "$current/bin/git-tp" ]; then
+    printf 'git-tp: installed runtime is missing under %s\n' "$current" >&2
+    exit 1
 fi
-if [ -e "$install_dir/lib/git-tp" ]; then
-    backup_lib=1
-    mv "$install_dir/lib/git-tp" "$backup_dir/lib/git-tp"
+GIT_TP_INSTALL_ROOT=$install_root
+export GIT_TP_INSTALL_ROOT
+exec "$current/bin/git-tp" "$@"
+EOF
+chmod +x "$launcher_file"
+if [ -e "$install_dir/.git-tp/current" ] && [ ! -L "$install_dir/.git-tp/current" ]; then
+    fail 'current installation pointer is not a symlink; remove it after verifying the installation'
 fi
-if [ -e "$install_dir/.git-tp-source" ]; then
-    backup_source=1
-    mv "$install_dir/.git-tp-source" "$backup_dir/source"
+current_link="$install_dir/.git-tp/.current.$$"
+rm -f "$current_link"
+ln -s "versions/${release_dir##*/}" "$current_link"
+mv -Tf "$current_link" "$install_dir/.git-tp/current"
+release_published=1
+if [ ! -f "$install_dir/bin/git-tp" ] || ! grep -Fq '# git-tp managed launcher v1' "$install_dir/bin/git-tp"; then
+    mv "$launcher_file" "$install_dir/bin/git-tp"
 fi
-installed_bin=1
-mv "$staging_dir/git-tp" "$install_dir/bin/git-tp"
-installed_lib=1
-mv "$staging_dir/git-tp-lib" "$install_dir/lib/git-tp"
-printf '%s\n' "$source_url" > "$staging_dir/source"
-installed_source=1
-mv "$staging_dir/source" "$install_dir/.git-tp-source"
+rm -f "$install_dir/.git-tp-source"
 
 printf 'git-tp installed in %s\n' "$install_dir"
 case ":${PATH:-}:" in

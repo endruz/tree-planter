@@ -89,6 +89,14 @@ run_cli_tests() {
     test_start cli
     assert_success "$GIT_TP" --help
     assert_stdout_contains 'git tp add'
+    grep -Fxq '  git tp update [--check]' /tmp/git-tp-test.stdout || {
+        printf 'FAIL: top-level update help has inconsistent indentation\n' >&2
+        failures=$((failures + 1))
+    }
+    grep -Fxq '  git tp update --version <version>' /tmp/git-tp-test.stdout || {
+        printf 'FAIL: top-level versioned update help has inconsistent indentation\n' >&2
+        failures=$((failures + 1))
+    }
     assert_success "$GIT_TP" --version
     assert_stdout_contains 'git-tp '
     assert_success "$GIT_TP" add --help
@@ -473,6 +481,80 @@ pre-hook = \"hooks.sh\""
     test_end
 }
 
+run_update_integration_tests() {
+    test_start update
+    install_root="$HOME/tools"
+    initial_archive="$HOME/git-tp-initial.tar.gz"
+    tar -czf "$initial_archive" -C "$ROOT_DIR" bin lib install.sh
+    GIT_TP_SOURCE_URL="file://$initial_archive" bash "$ROOT_DIR/install.sh" --install-dir "$install_root" \
+        >"/tmp/git-tp-test.stdout" 2>"/tmp/git-tp-test.stderr" || {
+        cat /tmp/git-tp-test.stderr >&2
+        printf 'FAIL: unable to install git-tp for update integration\n' >&2
+        failures=$((failures + 1))
+        test_end
+        return
+    }
+
+    updated_root="$HOME/updated-source"
+    mkdir -p "$updated_root"
+    cp -R "$ROOT_DIR/bin" "$ROOT_DIR/lib" "$updated_root/"
+    cp "$ROOT_DIR/install.sh" "$updated_root/"
+    sed -i 's/GIT_TP_VERSION="0.1.0"/GIT_TP_VERSION="0.2.0"/' "$updated_root/bin/git-tp"
+    printf 'updated runtime\n' > "$updated_root/lib/git-tp/updated-marker"
+    updated_archive="$HOME/git-tp-updated.tar.gz"
+    tar -czf "$updated_archive" -C "$updated_root" bin lib install.sh
+    printf 'file://%s\n' "$updated_archive" > "$install_root/.git-tp/current/source"
+
+    run_installed_git_tp() {
+        (cd "$TEST_REPO" && "$install_root/bin/git-tp" "$@")
+    }
+
+    worktree_root="$HOME/worktrees"
+    write_config "[worktree]
+root = \"$worktree_root\""
+    assert_success run_installed_git_tp add --create-branch feature/before-update
+    [[ -d "$worktree_root/$(basename "$TEST_REPO")/feature/before-update" ]] || {
+        printf 'FAIL: installed git-tp did not create a real Git worktree before update\n' >&2
+        failures=$((failures + 1))
+    }
+
+    current_release=$(readlink "$install_root/.git-tp/current")
+    assert_success run_installed_git_tp update
+    assert_stdout_contains 'git-tp updated: 0.1.0 -> 0.2.0'
+    [[ "$($install_root/bin/git-tp --version)" == 'git-tp 0.2.0' ]] || {
+        printf 'FAIL: installed git-tp did not switch to the updated release\n' >&2
+        failures=$((failures + 1))
+    }
+    [[ -f "$install_root/.git-tp/current/lib/git-tp/updated-marker" ]] || {
+        printf 'FAIL: updated release runtime is missing\n' >&2
+        failures=$((failures + 1))
+    }
+    [[ "$(readlink "$install_root/.git-tp/current")" != "$current_release" ]] || {
+        printf 'FAIL: successful update did not switch the release pointer\n' >&2
+        failures=$((failures + 1))
+    }
+    assert_success run_installed_git_tp add --create-branch feature/after-update
+    [[ -d "$worktree_root/$(basename "$TEST_REPO")/feature/after-update" ]] || {
+        printf 'FAIL: updated git-tp did not create a real Git worktree\n' >&2
+        failures=$((failures + 1))
+    }
+
+    current_release=$(readlink "$install_root/.git-tp/current")
+    printf 'file://%s/missing.tar.gz\n' "$HOME" > "$install_root/.git-tp/current/source"
+    assert_failure run_installed_git_tp update
+    assert_stderr_contains 'unable to download source'
+    [[ "$(readlink "$install_root/.git-tp/current")" == "$current_release" ]] || {
+        printf 'FAIL: failed real-Git update changed the release pointer\n' >&2
+        failures=$((failures + 1))
+    }
+    [[ "$($install_root/bin/git-tp --version)" == 'git-tp 0.2.0' ]] || {
+        printf 'FAIL: failed update damaged the installed git-tp version\n' >&2
+        failures=$((failures + 1))
+    }
+    assert_success run_installed_git_tp add --create-branch feature/after-failed-update
+    test_end
+}
+
 case "$MODE" in
     cli)
         run_cli_tests
@@ -492,6 +574,9 @@ case "$MODE" in
     legacy-git)
         run_legacy_git_tests
         ;;
+    update)
+        run_update_integration_tests
+        ;;
     all)
         run_cli_tests
         run_config_tests
@@ -499,6 +584,7 @@ case "$MODE" in
         run_hook_cleanup_tests
         run_nested_root_tests
         run_legacy_git_tests
+        run_update_integration_tests
         ;;
     *)
         printf 'unknown test mode: %s\n' "$MODE" >&2

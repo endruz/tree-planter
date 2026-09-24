@@ -12,18 +12,17 @@ source "$SCRIPT_DIR/../lib/git-tp/hooks.bash"
 source "$SCRIPT_DIR/../lib/git-tp/commands.bash"
 
 print_help() {
-    cat <<'EOF'
-git tp - manage linked worktrees
-
-Usage:
-  git tp add [--create-branch] <branch>
-  git tp remove [-f|--force] <branch>
-  git tp cleanup
-    git tp update [--check]
-    git tp update --version <version>
-  git tp --help
-  git tp --version
-EOF
+        printf '%s\n' \
+                'git tp - manage linked worktrees' \
+                '' \
+                'Usage:' \
+                '  git tp add [--create-branch] <branch>' \
+                '  git tp remove [-f|--force] <branch>' \
+                '  git tp cleanup' \
+                '  git tp update [--check]' \
+                '  git tp update --version <version>' \
+                '  git tp --help' \
+                '  git tp --version'
 }
 
 print_command_help() {
@@ -48,9 +47,12 @@ fail() {
     exit 1
 }
 
-INSTALL_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+INSTALL_ROOT=${GIT_TP_INSTALL_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}
 if [[ -e "$INSTALL_ROOT/.git-tp.lock" ]]; then
-    fail 'installation is busy'
+    lock_owner=unknown
+    [[ -r "$INSTALL_ROOT/.git-tp.lock/pid" ]] && lock_owner=$(<"$INSTALL_ROOT/.git-tp.lock/pid")
+    [[ -n "$lock_owner" ]] || lock_owner=unknown
+    fail "installation is busy (lock owner PID: $lock_owner); verify it is stale before removing $INSTALL_ROOT/.git-tp.lock"
 fi
 
 if [[ ${1:-} == "--help" || ${1:-} == "-h" || $# -eq 0 ]]; then
