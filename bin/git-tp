@@ -48,13 +48,6 @@ fail() {
 }
 
 INSTALL_ROOT=${GIT_TP_INSTALL_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}
-if [[ -e "$INSTALL_ROOT/.git-tp.lock" ]]; then
-    lock_owner=unknown
-    [[ -r "$INSTALL_ROOT/.git-tp.lock/pid" ]] && lock_owner=$(<"$INSTALL_ROOT/.git-tp.lock/pid")
-    [[ -n "$lock_owner" ]] || lock_owner=unknown
-    fail "installation is busy (lock owner PID: $lock_owner); verify it is stale before removing $INSTALL_ROOT/.git-tp.lock"
-fi
-
 if [[ ${1:-} == "--help" || ${1:-} == "-h" || $# -eq 0 ]]; then
     print_help
     exit 0
@@ -82,6 +75,13 @@ esac
 if [[ "$command_name" == update ]]; then
     command_update "$@"
     exit 0
+fi
+
+if [[ -e "$INSTALL_ROOT/.git-tp.lock" ]]; then
+    lock_owner=unknown
+    [[ -r "$INSTALL_ROOT/.git-tp.lock/pid" ]] && lock_owner=$(<"$INSTALL_ROOT/.git-tp.lock/pid")
+    [[ -n "$lock_owner" ]] || lock_owner=unknown
+    fail "installation is busy (lock owner PID: $lock_owner); verify it is stale before removing $INSTALL_ROOT/.git-tp.lock"
 fi
 
 command -v realpath >/dev/null 2>&1 || fail 'required command not found: realpath'

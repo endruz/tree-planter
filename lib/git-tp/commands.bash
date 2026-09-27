@@ -209,7 +209,7 @@ command_run_update_installer() {
 }
 
 command_update() {
-    local check=false version='' expected_version='' expected_current='' arg source_file install_root installer source_url download_url tag base old_version new_version
+    local check=false version='' expected_version='' expected_current='' arg source_file install_root installer source_url download_url metadata_url tag base old_version new_version
     while (($# > 0)); do
         arg=$1
         shift
@@ -229,6 +229,12 @@ command_update() {
     done
 
     install_root=$INSTALL_ROOT
+    if [[ -e "$install_root/.git-tp.lock" ]]; then
+        lock_owner=unknown
+        [[ -r "$install_root/.git-tp.lock/pid" ]] && lock_owner=$(<"$install_root/.git-tp.lock/pid")
+        [[ -n "$lock_owner" ]] || lock_owner=unknown
+        fail "installation is busy (lock owner PID: $lock_owner); verify it is stale before removing $install_root/.git-tp.lock"
+    fi
     expected_current=$(readlink "$install_root/.git-tp/current" 2>/dev/null || true)
     source_file=$install_root/.git-tp/current/source
     if [[ ! -r "$source_file" ]]; then
@@ -255,6 +261,10 @@ command_update() {
             fail 'the configured update source does not support --version'
         fi
     fi
+    metadata_url=$source_url
+    if [[ -n "$version" && "$source_url" != *'{version}'* ]]; then
+        metadata_url=$download_url
+    fi
 
     installer=$install_root/.git-tp/current/lib/git-tp/install.sh
     if [[ ! -x "$installer" ]]; then
@@ -264,12 +274,12 @@ command_update() {
         fail 'cannot safely check a legacy installation without a bundled installer; run git tp update to migrate it'
     fi
     if [[ "$check" == true ]]; then
-        command_run_update_installer "$installer" "$source_url" "$download_url" "$install_root" "$expected_version" "$expected_current" --check ||
+        command_run_update_installer "$installer" "$metadata_url" "$download_url" "$install_root" "$expected_version" "$expected_current" --check ||
             fail 'update check failed; the previous installation was retained'
     else
         old_version=$("$install_root/bin/git-tp" --version)
         old_version=${old_version#git-tp }
-        command_run_update_installer "$installer" "$source_url" "$download_url" "$install_root" "$expected_version" "$expected_current" ||
+        command_run_update_installer "$installer" "$metadata_url" "$download_url" "$install_root" "$expected_version" "$expected_current" ||
             fail 'update failed; the previous installation was retained'
         new_version=$("$install_root/bin/git-tp" --version)
         new_version=${new_version#git-tp }

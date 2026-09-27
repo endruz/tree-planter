@@ -88,6 +88,45 @@ fi
 grep -Fq 'required command not found: rmdir' "$TEST_HOME/stderr" || fail 'missing rmdir did not report the required dependency'
 [[ ! -e "$no_rmdir_prefix/.git-tp.lock" ]] || fail 'missing rmdir left an installation lock'
 
+lock_race_prefix="$TEST_HOME/lock-race-prefix"
+lock_race_bin="$TEST_HOME/lock-race-bin"
+lock_race_marker="$TEST_HOME/lock-race-seen"
+mkdir -p "$lock_race_bin"
+real_mv=$(command -v mv)
+cat > "$lock_race_bin/mv" <<EOF
+#!/bin/sh
+destination=''
+for argument do destination=\$argument; done
+if [ "\$destination" = "$lock_race_prefix/.git-tp.lock" ] && [ ! -e "$lock_race_marker" ]; then
+    "$real_mv" "\$@" || exit
+    : > "$lock_race_marker"
+    kill -TERM "\$PPID"
+    exit 1
+fi
+exec "$real_mv" "\$@"
+EOF
+chmod +x "$lock_race_bin/mv"
+if PATH="$lock_race_bin:$PATH" GIT_TP_SOURCE_URL="file://$ARCHIVE" \
+    bash "$INSTALLER" --install-dir "$lock_race_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'installer succeeded after SIGTERM immediately following lock publication'
+else
+    lock_race_status=$?
+    [[ "$lock_race_status" -eq 143 ]] || fail "SIGTERM during lock publication returned $lock_race_status instead of 143"
+fi
+[[ -e "$lock_race_marker" ]] || fail 'lock race test did not signal after publishing the lock directory'
+[[ ! -e "$lock_race_prefix/.git-tp.lock" ]] || fail 'SIGTERM during lock publication left a stale lock'
+
+busy_lock_prefix="$TEST_HOME/busy-lock-prefix"
+mkdir -p "$busy_lock_prefix/.git-tp.lock"
+printf '98765432\n' > "$busy_lock_prefix/.git-tp.lock/pid"
+if GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$busy_lock_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'installer replaced an existing installation lock'
+fi
+grep -Fq 'lock owner PID: 98765432' "$TEST_HOME/stderr" || fail 'existing installation lock did not report its owner'
+[[ "$(<"$busy_lock_prefix/.git-tp.lock/pid")" == '98765432' ]] || fail 'failed lock acquisition changed another installer lock'
+
 GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$PREFIX" \
     >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {
     cat "$TEST_HOME/stderr" >&2
@@ -151,6 +190,22 @@ fi
 grep -Fq 'source executable cannot be run' "$TEST_HOME/stderr" || fail 'invalid source executable did not report a runtime error'
 [[ "$(readlink "$PREFIX/.git-tp/current")" == "$previous_release" ]] || fail 'invalid source executable changed the current release pointer'
 [[ "$($PREFIX/bin/git-tp --version)" == 'git-tp 0.1.0' ]] || fail 'invalid source executable damaged the working installation'
+
+invalid_installer_root="$TEST_HOME/invalid-installer-source"
+mkdir -p "$invalid_installer_root"
+cp -R "$ROOT_DIR/bin" "$ROOT_DIR/lib" "$invalid_installer_root/"
+cp "$ROOT_DIR/install.sh" "$invalid_installer_root/"
+sed -i 's/GIT_TP_VERSION="0.1.0"/GIT_TP_VERSION="0.2.0"/' "$invalid_installer_root/bin/git-tp"
+printf '\nif then\n' >> "$invalid_installer_root/install.sh"
+invalid_installer_archive="$TEST_HOME/invalid-installer.tar.gz"
+tar -czf "$invalid_installer_archive" -C "$invalid_installer_root" bin lib install.sh
+printf 'file://%s\n' "$invalid_installer_archive" > "$PREFIX/.git-tp/current/source"
+if "$PREFIX/bin/git-tp" update >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'update accepted an installer with invalid shell syntax'
+fi
+grep -Fq 'source installer contains invalid shell syntax' "$TEST_HOME/stderr" || fail 'update did not reject an invalid archived installer'
+[[ "$(readlink "$PREFIX/.git-tp/current")" == "$previous_release" ]] || fail 'invalid archived installer changed the current release pointer'
+[[ "$($PREFIX/bin/git-tp --version)" == 'git-tp 0.1.0' ]] || fail 'invalid archived installer damaged the working installation'
 printf 'file://%s\n' "$ARCHIVE" > "$PREFIX/.git-tp/current/source"
 
 legacy_prefix="$TEST_HOME/legacy"
@@ -240,6 +295,78 @@ sed -i 's/GIT_TP_VERSION="0.1.0"/GIT_TP_VERSION="0.2.0"/' "$updated_root/bin/git
 printf 'updated runtime\n' > "$updated_root/lib/git-tp/updated-marker"
 updated_archive="$TEST_HOME/updated.tar.gz"
 tar -czf "$updated_archive" -C "$updated_root" bin lib install.sh
+interrupted_prefix="$TEST_HOME/interrupted-update"
+GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$interrupted_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {
+    cat "$TEST_HOME/stderr" >&2
+    fail 'unable to install interrupted-update fixture'
+}
+interrupted_current=$(readlink "$interrupted_prefix/.git-tp/current")
+interrupt_mv_bin="$TEST_HOME/interrupt-mv-bin"
+interrupt_mv_marker="$TEST_HOME/interrupt-mv-seen"
+mkdir -p "$interrupt_mv_bin"
+cat > "$interrupt_mv_bin/mv" <<EOF
+#!/bin/sh
+destination=''
+for argument do destination=\$argument; done
+if [ "\$destination" = "\${GIT_TP_TEST_INTERRUPT_TARGET:-}" ] && [ ! -e "\${GIT_TP_TEST_INTERRUPT_MARKER:-}" ]; then
+    "$real_mv" "\$@" || exit
+    : > "\${GIT_TP_TEST_INTERRUPT_MARKER:?}"
+    kill -TERM "\$PPID"
+    exit 0
+fi
+exec "$real_mv" "\$@"
+EOF
+chmod +x "$interrupt_mv_bin/mv"
+if PATH="$interrupt_mv_bin:$PATH" GIT_TP_TEST_INTERRUPT_TARGET="$interrupted_prefix/.git-tp/current" \
+    GIT_TP_TEST_INTERRUPT_MARKER="$interrupt_mv_marker" GIT_TP_SOURCE_URL="file://$updated_archive" \
+    bash "$INSTALLER" --install-dir "$interrupted_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'installer succeeded after interruption immediately following current publication'
+fi
+[[ -e "$interrupt_mv_marker" ]] || fail 'interrupted install test did not interrupt after current publication'
+[[ "$(readlink "$interrupted_prefix/.git-tp/current")" == "$interrupted_current" ]] || fail 'interrupted install did not restore the previous current release'
+[[ "$("$interrupted_prefix/bin/git-tp" --version)" == 'git-tp 0.1.0' ]] || fail 'interrupted install damaged the previous entry point'
+cat > "$interrupted_prefix/bin/git-tp" <<'EOF'
+#!/bin/sh
+install_root=$(CDPATH= cd "$(dirname "$0")/.." && pwd -P)
+exec "$install_root/.git-tp/current/bin/git-tp" "$@"
+EOF
+chmod +x "$interrupted_prefix/bin/git-tp"
+launcher_interrupt_bin="$TEST_HOME/launcher-interrupt-bin"
+launcher_interrupt_marker="$TEST_HOME/launcher-interrupt-seen"
+mkdir -p "$launcher_interrupt_bin"
+cat > "$launcher_interrupt_bin/mv" <<EOF
+#!/bin/sh
+if [ "\${2:-}" = "$interrupted_prefix/bin/git-tp" ] && [ ! -e "$launcher_interrupt_marker" ]; then
+    "$real_mv" "\$@" || exit
+    : > "$launcher_interrupt_marker"
+    kill -TERM "\$PPID"
+    exit 0
+fi
+exec "$real_mv" "\$@"
+EOF
+chmod +x "$launcher_interrupt_bin/mv"
+if PATH="$launcher_interrupt_bin:$PATH" GIT_TP_SOURCE_URL="file://$updated_archive" \
+    bash "$INSTALLER" --install-dir "$interrupted_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'installer succeeded after interruption immediately following launcher replacement'
+fi
+[[ -e "$launcher_interrupt_marker" ]] || fail 'launcher interruption test did not interrupt after launcher replacement'
+[[ "$(readlink "$interrupted_prefix/.git-tp/current")" == "$interrupted_current" ]] || fail 'launcher interruption did not restore the previous current release'
+[[ "$("$interrupted_prefix/bin/git-tp" --version)" == 'git-tp 0.1.0' ]] || fail 'launcher interruption did not restore the previous entry point'
+first_interrupt_prefix="$TEST_HOME/interrupted-first-install"
+first_interrupt_marker="$TEST_HOME/first-install-interrupt-seen"
+if PATH="$interrupt_mv_bin:$PATH" GIT_TP_TEST_INTERRUPT_TARGET="$first_interrupt_prefix/.git-tp/current" \
+    GIT_TP_TEST_INTERRUPT_MARKER="$first_interrupt_marker" GIT_TP_SOURCE_URL="file://$updated_archive" \
+    bash "$INSTALLER" --install-dir "$first_interrupt_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'first installation succeeded after interruption immediately following current publication'
+fi
+[[ -e "$first_interrupt_marker" ]] || fail 'first-install interruption did not occur after current publication'
+[[ ! -e "$first_interrupt_prefix/.git-tp/current" ]] || fail 'interrupted first install left a current release published'
+[[ ! -e "$first_interrupt_prefix/bin/git-tp" ]] || fail 'interrupted first install left a stable launcher without a current release'
+assert_no_matches "$first_interrupt_prefix/.git-tp/versions/release.*" 'interrupted first install left an incomplete release directory'
 stale_prefix="$TEST_HOME/stale-update"
 GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$stale_prefix" \
     >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {
@@ -465,6 +592,16 @@ cp "$updated_archive" "$tag_root/archive/refs/tags/v0.2.0.tar.gz"
 printf 'file://%s/archive/refs/tags/v0.1.0.tar.gz\n' "$tag_root" > "$PREFIX/.git-tp/current/source"
 cp "$ARCHIVE" "$tag_root/archive/refs/tags/v0.1.0.tar.gz"
 assert_update "$PREFIX/bin/git-tp" update --check --version 0.2.0
+tagged_prefix="$TEST_HOME/tagged-update"
+GIT_TP_SOURCE_URL="file://$tag_root/archive/refs/tags/v0.1.0.tar.gz" bash "$INSTALLER" --install-dir "$tagged_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {
+    cat "$TEST_HOME/stderr" >&2
+    fail 'unable to install tag-pinned update fixture'
+}
+assert_update "$tagged_prefix/bin/git-tp" update --version 0.2.0
+assert_update "$tagged_prefix/bin/git-tp" update
+[[ "$($tagged_prefix/bin/git-tp --version)" == 'git-tp 0.2.0' ]] || fail 'ordinary update downgraded the explicitly selected release'
+[[ "$(<"$tagged_prefix/.git-tp/current/source")" == "file://$tag_root/archive/refs/tags/v0.2.0.tar.gz" ]] || fail 'pinned update did not persist the selected tag source'
 
 release_root="$TEST_HOME/release-source"
 mkdir -p "$release_root/releases/download/v0.1.0"
@@ -476,6 +613,22 @@ assert_update "$PREFIX/bin/git-tp" update --check --version 0.2.0
 
 mkdir "$PREFIX/.git-tp.lock"
 printf '99999999\n' > "$PREFIX/.git-tp.lock/pid"
+if ! "$PREFIX/bin/git-tp" --help >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'installation lock blocked the read-only help command'
+fi
+grep -Fq 'git tp update' "$TEST_HOME/stdout" || fail 'help command did not print usage while the installation lock was present'
+if ! "$PREFIX/bin/git-tp" update --help >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'installation lock blocked the read-only update help command'
+fi
+grep -Fq 'Usage: git tp update' "$TEST_HOME/stdout" || fail 'update help did not print usage while the installation lock was present'
+if ! "$PREFIX/bin/git-tp" update --check --help >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'installation lock blocked update help after --check'
+fi
+grep -Fq 'Usage: git tp update' "$TEST_HOME/stdout" || fail 'update --check --help did not print usage while the installation lock was present'
+if ! "$PREFIX/bin/git-tp" --version >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'installation lock blocked the read-only version command'
+fi
+grep -Fq 'git-tp 0.1.0' "$TEST_HOME/stdout" || fail 'version command did not print the version while the installation lock was present'
 if "$PREFIX/bin/git-tp" update --check >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
     fail 'update ignored an active installation lock'
 fi

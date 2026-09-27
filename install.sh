@@ -57,41 +57,95 @@ extracted_dir="$temp_dir/source"
 staging_dir="$temp_dir/staging"
 release_dir=''
 release_published=0
+publication_complete=0
 current_link=''
 rollback_link=''
 launcher_file=''
+launcher_backup=''
+launcher_replacement=0
+launcher_had_previous=0
+previous_current=''
 lock_dir="$install_dir/.git-tp.lock"
+lock_staging_dir=''
+lock_owner_token=''
 lock_acquired=0
+lock_acquisition_in_progress=0
 interrupted=0
+pending_signal_status=0
 
 handle_sigint() {
     interrupted=1
-    exit 130
+    if [ "$lock_acquisition_in_progress" -eq 1 ]; then
+        pending_signal_status=130
+    else
+        exit 130
+    fi
 }
 
 handle_sigterm() {
     interrupted=1
-    exit 143
+    if [ "$lock_acquisition_in_progress" -eq 1 ]; then
+        pending_signal_status=143
+    else
+        exit 143
+    fi
 }
 
 cleanup() {
     status=$?
     trap - 0 1 2 3 15
-    if [ "$lock_acquired" -eq 1 ]; then
-        rm -f "$lock_dir/pid"
-        rmdir "$lock_dir" 2>/dev/null || true
-    fi
-    if [ "$release_published" -eq 0 ] && [ -n "$release_dir" ]; then
+    rollback_failed=0
+    if [ "$publication_complete" -eq 0 ] && [ -n "$release_dir" ]; then
         published_target=$(readlink "$install_dir/.git-tp/current" 2>/dev/null || true)
-        [ "$published_target" = "versions/${release_dir##*/}" ] && release_published=1
+        if [ "$published_target" = "versions/${release_dir##*/}" ]; then
+            if [ "$launcher_replacement" -eq 1 ] && grep -Fq '# git-tp managed launcher v1' "$install_dir/bin/git-tp" 2>/dev/null; then
+                if [ "$launcher_had_previous" -eq 1 ]; then
+                    if [ -n "$launcher_backup" ] && [ -e "$launcher_backup" ] &&
+                        mv -f "$launcher_backup" "$install_dir/bin/git-tp"; then
+                        launcher_backup=''
+                    else
+                        rollback_failed=1
+                    fi
+                elif ! rm -f "$install_dir/bin/git-tp"; then
+                    rollback_failed=1
+                fi
+            fi
+            if [ "$rollback_failed" -eq 0 ]; then
+                if [ -n "$previous_current" ]; then
+                    rollback_link="$install_dir/.git-tp/.rollback.$$"
+                    if ! ln -s "$previous_current" "$rollback_link" ||
+                        ! mv -Tf "$rollback_link" "$install_dir/.git-tp/current"; then
+                        rollback_failed=1
+                    fi
+                elif ! rm -f "$install_dir/.git-tp/current"; then
+                    rollback_failed=1
+                fi
+            fi
+            if [ "$rollback_failed" -eq 1 ]; then
+                release_published=1
+                printf 'git-tp installer: warning: unable to roll back incomplete release; it remains current\n' >&2
+            fi
+        fi
     fi
+    [ "$publication_complete" -eq 1 ] && release_published=1
     if [ "$release_published" -eq 0 ] && [ -n "$release_dir" ]; then
         rm -rf "$release_dir"
     fi
     [ -z "$current_link" ] || rm -f "$current_link"
     [ -z "$rollback_link" ] || rm -f "$rollback_link"
+    if [ "$rollback_failed" -eq 0 ]; then
+        [ -z "$launcher_backup" ] || rm -f "$launcher_backup"
+    fi
     [ -z "$launcher_file" ] || rm -f "$launcher_file"
+    [ -z "$lock_staging_dir" ] || rm -rf "$lock_staging_dir"
     rm -rf "$temp_dir"
+    if [ "$lock_acquired" -eq 1 ]; then
+        recorded_owner_token=$(cat "$lock_dir/owner" 2>/dev/null || true)
+        if [ "$recorded_owner_token" = "$lock_owner_token" ]; then
+            rm -f "$lock_dir/pid" "$lock_dir/owner"
+            rmdir "$lock_dir" 2>/dev/null || true
+        fi
+    fi
     exit "$status"
 }
 trap cleanup 0
@@ -111,12 +165,38 @@ if [ "$check_only" = true ]; then
     fi
 else
     mkdir -p "$install_dir/bin" "$install_dir/.git-tp/versions"
-    if ! mkdir "$lock_dir" 2>/dev/null; then
+    lock_acquisition_in_progress=1
+    lock_staging_dir=$(mktemp -d "$install_dir/.git-tp.lock.XXXXXX") || {
+        lock_acquisition_in_progress=0
+        [ "$pending_signal_status" -eq 0 ] || exit "$pending_signal_status"
+        fail 'unable to stage installation lock'
+    }
+    lock_owner_token=${lock_staging_dir##*/}
+    printf '%s\n' "$$" > "$lock_staging_dir/pid"
+    printf '%s\n' "$lock_owner_token" > "$lock_staging_dir/owner"
+    [ "$pending_signal_status" -eq 0 ] || {
+        lock_acquisition_in_progress=0
+        exit "$pending_signal_status"
+    }
+    lock_move_status=0
+    mv -Tn "$lock_staging_dir" "$lock_dir" 2>/dev/null || lock_move_status=$?
+    recorded_owner_token=$(cat "$lock_dir/owner" 2>/dev/null || true)
+    if [ "$recorded_owner_token" = "$lock_owner_token" ]; then
+        lock_acquired=1
+        lock_staging_dir=''
+        lock_acquisition_in_progress=0
+        [ "$pending_signal_status" -eq 0 ] || exit "$pending_signal_status"
+    else
+        rm -rf "$lock_staging_dir"
+        lock_staging_dir=''
+        lock_acquisition_in_progress=0
+        [ "$pending_signal_status" -eq 0 ] || exit "$pending_signal_status"
+        if [ "$lock_move_status" -ne 0 ] && [ ! -e "$lock_dir" ]; then
+            fail 'unable to acquire installation lock'
+        fi
         lock_owner=$(cat "$lock_dir/pid" 2>/dev/null || printf 'unknown')
         fail "installation is busy (lock owner PID: $lock_owner); verify it is stale before removing $lock_dir"
     fi
-    lock_acquired=1
-    printf '%s\n' "$$" > "$lock_dir/pid"
     if [ "$expected_current_set" = true ]; then
         actual_current=$(readlink "$install_dir/.git-tp/current" 2>/dev/null || true)
         [ "$actual_current" = "$expected_current" ] || fail 'installation changed during update; retry with the latest release'
@@ -170,6 +250,7 @@ cp -R "$source_root/lib/git-tp" "$staging_dir/git-tp-lib" || fail 'unable to sta
 cp "$source_root/install.sh" "$staging_dir/git-tp-lib/install.sh" || fail 'unable to stage source installer'
 chmod +x "$staging_dir/git-tp"
 chmod +x "$staging_dir/git-tp-lib/install.sh"
+bash -n "$staging_dir/git-tp-lib/install.sh" || fail 'source installer contains invalid shell syntax'
 source_version=''
 while IFS= read -r source_line || [ -n "$source_line" ]; do
     case "$source_line" in
@@ -243,22 +324,18 @@ previous_current=$(readlink "$install_dir/.git-tp/current" 2>/dev/null || true)
 rm -f "$current_link"
 ln -s "versions/${release_dir##*/}" "$current_link"
 mv -Tf "$current_link" "$install_dir/.git-tp/current"
-release_published=1
 if [ ! -f "$install_dir/bin/git-tp" ] || ! grep -Fq '# git-tp managed launcher v1' "$install_dir/bin/git-tp"; then
-    if ! mv "$launcher_file" "$install_dir/bin/git-tp"; then
-        if [ -n "$previous_current" ]; then
-            rollback_link="$install_dir/.git-tp/.rollback.$$"
-            ln -s "$previous_current" "$rollback_link" &&
-                mv -Tf "$rollback_link" "$install_dir/.git-tp/current" ||
-                fail 'unable to restore current release after launcher installation failed'
-        else
-            rm -f "$install_dir/.git-tp/current" ||
-                fail 'unable to remove current release after launcher installation failed'
-        fi
-        release_published=0
-        fail 'unable to install stable launcher'
+    launcher_replacement=1
+    if [ -e "$install_dir/bin/git-tp" ] || [ -L "$install_dir/bin/git-tp" ]; then
+        launcher_had_previous=1
+        launcher_backup=$(mktemp "$install_dir/bin/.git-tp-backup.XXXXXX") || fail 'unable to preserve existing stable launcher'
+        cp -pP "$install_dir/bin/git-tp" "$launcher_backup" || fail 'unable to preserve existing stable launcher'
     fi
+    mv "$launcher_file" "$install_dir/bin/git-tp" || fail 'unable to install stable launcher'
+    launcher_file=''
 fi
+publication_complete=1
+release_published=1
 if ! rm -f "$install_dir/.git-tp-source"; then
     printf 'git-tp installer: warning: unable to remove legacy source metadata: %s\n' \
         "$install_dir/.git-tp-source" >&2
