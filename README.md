@@ -78,14 +78,20 @@ rmdir "$lock"
 For a custom prefix, replace `~/.local` with that prefix. Do not remove a lock
 while its installer process is still active.
 
-Installations missing both `.git-tp/current/source` and the legacy
-`.git-tp-source` metadata cannot be updated through `git tp update`; rerun the
-supported installer first. Installations with only the legacy metadata can be
-updated and are migrated to the versioned layout.
+The original `git-tp` release predates the `update` subcommand, so that binary
+cannot run `git tp update`. Rerun the installer from the Install section to
+replace it and migrate to the versioned layout. For a non-default prefix, pass
+the same `GIT_TP_INSTALL_DIR` value used for the original installation.
 
-Legacy installations without a bundled installer must run `git tp update` once
-before `git tp update --check` is available. The check fails closed rather than
-executing an installer script from the source archive.
+Installations whose CLI already supports `update` can migrate from the legacy
+`.git-tp-source` metadata with `git tp update`. If both
+`.git-tp/current/source` and `.git-tp-source` are missing, rerun the supported
+installer instead.
+
+Update-capable legacy installations without a bundled installer must run
+`git tp update` once before `git tp update --check` is available. The check
+fails closed rather than executing an installer script from the source
+archive.
 
 To uninstall the default installation:
 

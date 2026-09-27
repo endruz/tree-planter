@@ -25,6 +25,54 @@ assert_no_matches() {
 
 tar -czf "$ARCHIVE" -C "$ROOT_DIR" bin lib install.sh
 
+directory_launcher_prefix="$TEST_HOME/directory-launcher"
+mkdir -p "$directory_launcher_prefix/bin/git-tp"
+if GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$directory_launcher_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'installer succeeded when the stable launcher path was a directory'
+fi
+[[ -d "$directory_launcher_prefix/bin/git-tp" ]] || fail 'installer replaced the launcher directory'
+[[ ! -e "$directory_launcher_prefix/.git-tp/current" ]] || fail 'directory launcher failure published a current release'
+
+launcher_failure_prefix="$TEST_HOME/launcher failure"
+launcher_failure_bin="$TEST_HOME/launcher-failure-bin"
+launcher_failure_marker="$TEST_HOME/launcher-failure-seen"
+mkdir -p "$launcher_failure_bin"
+GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$launcher_failure_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {
+    cat "$TEST_HOME/stderr" >&2
+    fail 'unable to install launcher-failure fixture'
+}
+launcher_failure_current=$(readlink "$launcher_failure_prefix/.git-tp/current")
+cat > "$launcher_failure_prefix/bin/git-tp" <<'EOF'
+#!/bin/sh
+install_root=$(CDPATH= cd "$(dirname "$0")/.." && pwd -P)
+exec "$install_root/.git-tp/current/bin/git-tp" "$@"
+EOF
+chmod +x "$launcher_failure_prefix/bin/git-tp"
+real_mv=$(command -v mv)
+cat > "$launcher_failure_bin/mv" <<EOF
+#!/bin/sh
+if [ "\${2:-}" = "$launcher_failure_prefix/bin/git-tp" ]; then
+    : > "$launcher_failure_marker"
+    case "\${1:-}" in
+        "$launcher_failure_prefix"/bin/*) ;;
+        *) : > "$launcher_failure_prefix/bin/git-tp" ;;
+    esac
+    exit 1
+fi
+exec "$real_mv" "\$@"
+EOF
+chmod +x "$launcher_failure_bin/mv"
+if PATH="$launcher_failure_bin:$PATH" GIT_TP_SOURCE_URL="file://$ARCHIVE" \
+    bash "$INSTALLER" --install-dir "$launcher_failure_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'installer succeeded after stable launcher replacement failed'
+fi
+[[ -e "$launcher_failure_marker" ]] || fail 'launcher failure test did not intercept the launcher replacement'
+[[ "$(readlink "$launcher_failure_prefix/.git-tp/current")" == "$launcher_failure_current" ]] || fail 'launcher failure did not restore the previous current release'
+[[ "$("$launcher_failure_prefix/bin/git-tp" --version)" == 'git-tp 0.1.0' ]] || fail 'launcher failure damaged the previous entry point'
+
 no_rmdir_path="$TEST_HOME/no-rmdir-path"
 mkdir -p "$no_rmdir_path"
 for command_name in bash git realpath curl tar mktemp find cp mv rm dirname chmod mkdir wc awk grep readlink ln cat gzip; do
@@ -111,6 +159,21 @@ cp "$ROOT_DIR/bin/git-tp" "$legacy_prefix/bin/git-tp"
 cp -R "$ROOT_DIR/lib/git-tp" "$legacy_prefix/lib/"
 printf 'file://%s\n' "$ARCHIVE" > "$legacy_prefix/.git-tp-source"
 [[ ! -e "$legacy_prefix/lib/git-tp/install.sh" ]] || fail 'legacy fixture unexpectedly contains an installed installer'
+legacy_rm_bin="$TEST_HOME/legacy-rm-bin"
+legacy_rm_marker="$TEST_HOME/legacy-rm-failure-seen"
+mkdir -p "$legacy_rm_bin"
+real_rm=$(command -v rm)
+cat > "$legacy_rm_bin/rm" <<EOF
+#!/bin/sh
+for argument do
+    if [ "\$argument" = "$legacy_prefix/.git-tp-source" ]; then
+        : > "$legacy_rm_marker"
+        exit 1
+    fi
+done
+exec "$real_rm" "\$@"
+EOF
+chmod +x "$legacy_rm_bin/rm"
 
 legacy_check_root="$TEST_HOME/legacy-check-source"
 legacy_check_prefix="$TEST_HOME/legacy-check"
@@ -130,12 +193,33 @@ fi
 grep -Fq 'cannot safely check a legacy installation' "$TEST_HOME/stderr" || fail 'legacy update --check did not explain the safe migration path'
 [[ ! -e "$legacy_check_marker" ]] || fail 'legacy update --check executed install.sh from the source archive'
 
-if ! "$legacy_prefix/bin/git-tp" update >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+if ! PATH="$legacy_rm_bin:$PATH" "$legacy_prefix/bin/git-tp" update >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
     cat "$TEST_HOME/stderr" >&2
-    fail 'legacy installation without a bundled installer could not update'
+    [[ -e "$legacy_rm_marker" ]] || fail 'legacy update failed before old metadata cleanup'
+    fail 'legacy update reported failure after publishing its new release'
 fi
+[[ -e "$legacy_rm_marker" ]] || fail 'legacy update did not attempt to clean old metadata'
+grep -Fq 'warning: unable to remove legacy source metadata' "$TEST_HOME/stderr" || fail 'legacy metadata cleanup failure was not reported as a warning'
 [[ "$($legacy_prefix/bin/git-tp --version)" == 'git-tp 0.1.0' ]] || fail 'legacy update did not install the archived version'
 [[ -L "$legacy_prefix/.git-tp/current" ]] || fail 'legacy update did not migrate to versioned layout'
+
+old_cli_prefix="$TEST_HOME/old-cli-install"
+mkdir -p "$old_cli_prefix/bin" "$old_cli_prefix/lib"
+cp "$ROOT_DIR/tests/fixtures/legacy-bin/git-tp" "$old_cli_prefix/bin/git-tp"
+chmod +x "$old_cli_prefix/bin/git-tp"
+cp -R "$ROOT_DIR/lib/git-tp" "$old_cli_prefix/lib/"
+printf 'file://%s\n' "$ARCHIVE" > "$old_cli_prefix/.git-tp-source"
+if PATH="$old_cli_prefix/bin:$PATH" git tp update >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'pre-update CLI unexpectedly accepted git tp update'
+fi
+grep -Fq 'unknown command: update' "$TEST_HOME/stderr" || fail 'pre-update CLI did not report update as an unknown command'
+GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$old_cli_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {
+    cat "$TEST_HOME/stderr" >&2
+    fail 'supported installer could not migrate the pre-update CLI'
+}
+[[ -L "$old_cli_prefix/.git-tp/current" ]] || fail 'pre-update CLI installer did not create the versioned layout'
+[[ "$($old_cli_prefix/bin/git-tp --version)" == 'git-tp 0.1.0' ]] || fail 'pre-update CLI migration did not install the supported entry point'
 
 unsafe_version_root="$TEST_HOME/unsafe-version-source"
 unsafe_version_prefix="$TEST_HOME/unsafe-version-prefix"
@@ -156,6 +240,27 @@ sed -i 's/GIT_TP_VERSION="0.1.0"/GIT_TP_VERSION="0.2.0"/' "$updated_root/bin/git
 printf 'updated runtime\n' > "$updated_root/lib/git-tp/updated-marker"
 updated_archive="$TEST_HOME/updated.tar.gz"
 tar -czf "$updated_archive" -C "$updated_root" bin lib install.sh
+stale_prefix="$TEST_HOME/stale-update"
+GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$stale_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {
+    cat "$TEST_HOME/stderr" >&2
+    fail 'unable to install stale-update fixture'
+}
+stale_current=$(readlink "$stale_prefix/.git-tp/current")
+GIT_TP_SOURCE_URL="file://$updated_archive" bash "$INSTALLER" --install-dir "$stale_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {
+    cat "$TEST_HOME/stderr" >&2
+    fail 'unable to advance stale-update fixture'
+}
+latest_current=$(readlink "$stale_prefix/.git-tp/current")
+if GIT_TP_EXPECTED_CURRENT_SET=true GIT_TP_EXPECTED_CURRENT="$stale_current" GIT_TP_SOURCE_URL="file://$ARCHIVE" \
+    bash "$INSTALLER" --install-dir "$stale_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'installer accepted an update based on a stale current release'
+fi
+grep -Fq 'installation changed during update' "$TEST_HOME/stderr" || fail 'stale update did not report that the installation changed'
+[[ "$(readlink "$stale_prefix/.git-tp/current")" == "$latest_current" ]] || fail 'stale update replaced the latest release'
+[[ "$("$stale_prefix/bin/git-tp" --version)" == 'git-tp 0.2.0' ]] || fail 'stale update damaged the latest executable'
 third_root="$TEST_HOME/third-source"
 mkdir -p "$third_root"
 cp -R "$updated_root/bin" "$updated_root/lib" "$third_root/"
@@ -163,6 +268,80 @@ cp "$ROOT_DIR/install.sh" "$third_root/"
 sed -i 's/GIT_TP_VERSION="0.2.0"/GIT_TP_VERSION="0.3.0"/' "$third_root/bin/git-tp"
 third_archive="$TEST_HOME/template-0.3.0.tar.gz"
 tar -czf "$third_archive" -C "$third_root" bin lib install.sh
+race_prefix="$TEST_HOME/race-install"
+race_template="file://$TEST_HOME/race-{version}.tar.gz"
+cp "$updated_archive" "$TEST_HOME/race-0.2.0.tar.gz"
+cp "$third_archive" "$TEST_HOME/race-0.3.0.tar.gz"
+GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$race_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {
+    cat "$TEST_HOME/stderr" >&2
+    fail 'unable to install concurrent-update fixture'
+}
+race_old_current=$(readlink "$race_prefix/.git-tp/current")
+GIT_TP_SOURCE_URL="$race_template" GIT_TP_DOWNLOAD_URL="file://$updated_archive" \
+    GIT_TP_EXPECTED_CURRENT_SET=true GIT_TP_EXPECTED_CURRENT="$race_old_current" \
+    bash "$INSTALLER" --install-dir "$race_prefix" >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {
+    cat "$TEST_HOME/stderr" >&2
+    fail 'unable to prepare first concurrent-update version'
+}
+race_mid_current=$(readlink "$race_prefix/.git-tp/current")
+GIT_TP_SOURCE_URL="$race_template" GIT_TP_DOWNLOAD_URL="file://$third_archive" \
+    GIT_TP_EXPECTED_CURRENT_SET=true GIT_TP_EXPECTED_CURRENT="$race_mid_current" \
+    bash "$INSTALLER" --install-dir "$race_prefix" >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {
+    cat "$TEST_HOME/stderr" >&2
+    fail 'unable to prepare latest concurrent-update version'
+}
+race_latest_current=$(readlink "$race_prefix/.git-tp/current")
+race_readlink_bin="$TEST_HOME/race-readlink-bin"
+race_readlink_marker="$TEST_HOME/race-readlink-marker"
+mkdir -p "$race_readlink_bin"
+real_readlink=$(command -v readlink)
+cat > "$race_readlink_bin/readlink" <<EOF
+#!/bin/sh
+if [ "\${1:-}" = "$race_prefix/.git-tp/current" ] && [ ! -e "$race_readlink_marker" ]; then
+    : > "$race_readlink_marker"
+    printf '%s\\n' "$race_mid_current"
+    exit 0
+fi
+exec "$real_readlink" "\$@"
+EOF
+chmod +x "$race_readlink_bin/readlink"
+if PATH="$race_readlink_bin:$PATH" "$race_prefix/bin/git-tp" update --version 0.2.0 \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'CLI update published from a stale release snapshot'
+fi
+grep -Fq 'installation changed during update' "$TEST_HOME/stderr" || fail 'CLI stale update did not report the changed installation'
+[[ -e "$race_readlink_marker" ]] || fail 'CLI stale-update test did not intercept the snapshot read'
+[[ "$(readlink "$race_prefix/.git-tp/current")" == "$race_latest_current" ]] || fail 'CLI stale update replaced the latest release'
+[[ "$("$race_prefix/bin/git-tp" --version)" == 'git-tp 0.3.0' ]] || fail 'CLI stale update damaged the latest executable'
+check_link="$race_prefix/.git-tp/.check-current"
+ln -s "$race_mid_current" "$check_link"
+mv -Tf "$check_link" "$race_prefix/.git-tp/current"
+check_curl_bin="$TEST_HOME/check-curl-bin"
+check_curl_marker="$TEST_HOME/check-curl-race-seen"
+mkdir -p "$check_curl_bin"
+real_curl=$(command -v curl)
+real_ln=$(command -v ln)
+cat > "$check_curl_bin/curl" <<EOF
+#!/bin/sh
+"$real_curl" "\$@" || exit
+if [ ! -e "$check_curl_marker" ]; then
+    : > "$check_curl_marker"
+    "$real_ln" -s "$race_latest_current" "$race_prefix/.git-tp/.check-current" || exit 1
+    "$real_mv" -Tf "$race_prefix/.git-tp/.check-current" "$race_prefix/.git-tp/current" || exit 1
+fi
+EOF
+chmod +x "$check_curl_bin/curl"
+if PATH="$check_curl_bin:$PATH" "$race_prefix/bin/git-tp" update --check --version 0.2.0 \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'CLI update --check accepted a stale current snapshot'
+fi
+grep -Fq 'installation changed during update check' "$TEST_HOME/stderr" || fail 'CLI stale update check did not report the changed installation'
+if grep -Fq 'update available: 0.3.0 -> 0.2.0' "$TEST_HOME/stdout"; then
+    fail 'CLI update --check reported an update to a version older than the current release'
+fi
+[[ -e "$check_curl_marker" ]] || fail 'CLI stale update check did not switch current during download'
+[[ "$(readlink "$race_prefix/.git-tp/current")" == "$race_latest_current" ]] || fail 'CLI stale update check changed the latest release'
 template_prefix="$TEST_HOME/template-install"
 GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$template_prefix" \
     >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {

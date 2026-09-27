@@ -161,8 +161,8 @@ command_cleanup() {
 }
 
 command_run_archived_installer() (
-    local source_url=$1 download_url=$2 install_root=$3 expected_version=$4 bootstrap_dir archive members details member installer_member member_count archive_bytes
-    shift 4
+    local source_url=$1 download_url=$2 install_root=$3 expected_version=$4 expected_current=$5 bootstrap_dir archive members details member installer_member member_count archive_bytes
+    shift 5
     bootstrap_dir=$(mktemp -d "${TMPDIR:-/tmp}/git-tp-update.XXXXXX") || fail 'unable to create update temporary directory'
     trap 'rm -rf "$bootstrap_dir"' EXIT
     archive=$bootstrap_dir/source.tar.gz
@@ -191,23 +191,25 @@ command_run_archived_installer() (
     tar -xOzf "$archive" -- "$installer_member" > "$installer" || fail 'unable to read installer from source archive'
     chmod +x "$installer"
     GIT_TP_SOURCE_URL=$source_url GIT_TP_DOWNLOAD_URL=$download_url GIT_TP_EXPECTED_VERSION=$expected_version \
+        GIT_TP_EXPECTED_CURRENT_SET=true GIT_TP_EXPECTED_CURRENT=$expected_current \
         GIT_TP_ARCHIVE_FILE=$archive \
         "$installer" --install-dir "$install_root" "$@"
 )
 
 command_run_update_installer() {
-    local installer=$1 source_url=$2 download_url=$3 install_root=$4 expected_version=$5
-    shift 5
+    local installer=$1 source_url=$2 download_url=$3 install_root=$4 expected_version=$5 expected_current=$6
+    shift 6
     if [[ -x "$installer" ]]; then
-        GIT_TP_SOURCE_URL=$source_url GIT_TP_DOWNLOAD_URL=$download_url GIT_TP_EXPECTED_VERSION=$expected_version GIT_TP_ARCHIVE_FILE= \
+        GIT_TP_SOURCE_URL=$source_url GIT_TP_DOWNLOAD_URL=$download_url GIT_TP_EXPECTED_VERSION=$expected_version \
+            GIT_TP_EXPECTED_CURRENT_SET=true GIT_TP_EXPECTED_CURRENT=$expected_current GIT_TP_ARCHIVE_FILE= \
             "$installer" --install-dir "$install_root" "$@"
     else
-        command_run_archived_installer "$source_url" "$download_url" "$install_root" "$expected_version" "$@"
+        command_run_archived_installer "$source_url" "$download_url" "$install_root" "$expected_version" "$expected_current" "$@"
     fi
 }
 
 command_update() {
-    local check=false version='' expected_version='' arg source_file install_root installer source_url download_url tag base old_version new_version
+    local check=false version='' expected_version='' expected_current='' arg source_file install_root installer source_url download_url tag base old_version new_version
     while (($# > 0)); do
         arg=$1
         shift
@@ -227,6 +229,7 @@ command_update() {
     done
 
     install_root=$INSTALL_ROOT
+    expected_current=$(readlink "$install_root/.git-tp/current" 2>/dev/null || true)
     source_file=$install_root/.git-tp/current/source
     if [[ ! -r "$source_file" ]]; then
         source_file=$install_root/.git-tp-source
@@ -261,12 +264,12 @@ command_update() {
         fail 'cannot safely check a legacy installation without a bundled installer; run git tp update to migrate it'
     fi
     if [[ "$check" == true ]]; then
-        command_run_update_installer "$installer" "$source_url" "$download_url" "$install_root" "$expected_version" --check ||
+        command_run_update_installer "$installer" "$source_url" "$download_url" "$install_root" "$expected_version" "$expected_current" --check ||
             fail 'update check failed; the previous installation was retained'
     else
         old_version=$("$install_root/bin/git-tp" --version)
         old_version=${old_version#git-tp }
-        command_run_update_installer "$installer" "$source_url" "$download_url" "$install_root" "$expected_version" ||
+        command_run_update_installer "$installer" "$source_url" "$download_url" "$install_root" "$expected_version" "$expected_current" ||
             fail 'update failed; the previous installation was retained'
         new_version=$("$install_root/bin/git-tp" --version)
         new_version=${new_version#git-tp }

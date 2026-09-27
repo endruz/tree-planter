@@ -14,6 +14,8 @@ install_dir=${GIT_TP_INSTALL_DIR:-}
 source_url=${GIT_TP_SOURCE_URL:-https://github.com/endruz/tree-planter/archive/refs/heads/main.tar.gz}
 download_url=${GIT_TP_DOWNLOAD_URL:-$source_url}
 staged_archive=${GIT_TP_ARCHIVE_FILE:-}
+expected_current_set=${GIT_TP_EXPECTED_CURRENT_SET:-false}
+expected_current=${GIT_TP_EXPECTED_CURRENT:-}
 check_only=false
 
 while [ "$#" -gt 0 ]; do
@@ -56,7 +58,8 @@ staging_dir="$temp_dir/staging"
 release_dir=''
 release_published=0
 current_link=''
-launcher_file="$temp_dir/launcher"
+rollback_link=''
+launcher_file=''
 lock_dir="$install_dir/.git-tp.lock"
 lock_acquired=0
 interrupted=0
@@ -86,6 +89,8 @@ cleanup() {
         rm -rf "$release_dir"
     fi
     [ -z "$current_link" ] || rm -f "$current_link"
+    [ -z "$rollback_link" ] || rm -f "$rollback_link"
+    [ -z "$launcher_file" ] || rm -f "$launcher_file"
     rm -rf "$temp_dir"
     exit "$status"
 }
@@ -97,6 +102,7 @@ if [ "$check_only" != true ]; then
     mkdir -p "$install_dir/bin" "$install_dir/.git-tp/versions"
 fi
 install_dir=$(realpath -m "$install_dir")
+[ ! -d "$install_dir/bin/git-tp" ] || fail 'stable launcher path is a directory'
 lock_dir="$install_dir/.git-tp.lock"
 if [ "$check_only" = true ]; then
     if [ -e "$lock_dir" ]; then
@@ -111,6 +117,10 @@ else
     fi
     lock_acquired=1
     printf '%s\n' "$$" > "$lock_dir/pid"
+    if [ "$expected_current_set" = true ]; then
+        actual_current=$(readlink "$install_dir/.git-tp/current" 2>/dev/null || true)
+        [ "$actual_current" = "$expected_current" ] || fail 'installation changed during update; retry with the latest release'
+    fi
 fi
 mkdir -p "$extracted_dir" "$staging_dir"
 if [ -n "$staged_archive" ]; then
@@ -190,6 +200,10 @@ if [ "$check_only" = true ]; then
         current_version=$("$install_dir/bin/git-tp" --version)
     fi
     current_version=${current_version#git-tp }
+    if [ "$expected_current_set" = true ]; then
+        actual_current=$(readlink "$install_dir/.git-tp/current" 2>/dev/null || true)
+        [ "$actual_current" = "$expected_current" ] || fail 'installation changed during update check; retry with the latest release'
+    fi
     if [ "$current_version" = "$source_version" ]; then
         printf 'git-tp is up to date (%s)\n' "$current_version"
     else
@@ -205,6 +219,7 @@ cp -R "$staging_dir/git-tp-lib" "$release_dir/lib/git-tp" || fail 'unable to sta
 runtime_version=$(GIT_TP_INSTALL_ROOT= "$release_dir/bin/git-tp" --version) || fail 'source executable cannot be run'
 [ "$runtime_version" = "git-tp $source_version" ] || fail 'source executable version does not match its version declaration'
 printf '%s\n' "$source_url" > "$release_dir/source"
+launcher_file=$(mktemp "$install_dir/bin/.git-tp.XXXXXX") || fail 'unable to stage stable launcher'
 cat > "$launcher_file" <<'EOF'
 #!/bin/sh
 set -eu
@@ -224,14 +239,30 @@ if [ -e "$install_dir/.git-tp/current" ] && [ ! -L "$install_dir/.git-tp/current
     fail 'current installation pointer is not a symlink; remove it after verifying the installation'
 fi
 current_link="$install_dir/.git-tp/.current.$$"
+previous_current=$(readlink "$install_dir/.git-tp/current" 2>/dev/null || true)
 rm -f "$current_link"
 ln -s "versions/${release_dir##*/}" "$current_link"
 mv -Tf "$current_link" "$install_dir/.git-tp/current"
 release_published=1
 if [ ! -f "$install_dir/bin/git-tp" ] || ! grep -Fq '# git-tp managed launcher v1' "$install_dir/bin/git-tp"; then
-    mv "$launcher_file" "$install_dir/bin/git-tp"
+    if ! mv "$launcher_file" "$install_dir/bin/git-tp"; then
+        if [ -n "$previous_current" ]; then
+            rollback_link="$install_dir/.git-tp/.rollback.$$"
+            ln -s "$previous_current" "$rollback_link" &&
+                mv -Tf "$rollback_link" "$install_dir/.git-tp/current" ||
+                fail 'unable to restore current release after launcher installation failed'
+        else
+            rm -f "$install_dir/.git-tp/current" ||
+                fail 'unable to remove current release after launcher installation failed'
+        fi
+        release_published=0
+        fail 'unable to install stable launcher'
+    fi
 fi
-rm -f "$install_dir/.git-tp-source"
+if ! rm -f "$install_dir/.git-tp-source"; then
+    printf 'git-tp installer: warning: unable to remove legacy source metadata: %s\n' \
+        "$install_dir/.git-tp-source" >&2
+fi
 
 printf 'git-tp installed in %s\n' "$install_dir"
 case ":${PATH:-}:" in
