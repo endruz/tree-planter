@@ -159,3 +159,19 @@ command_cleanup() {
     fi
     printf 'Cleaned up %s stale worktree record(s)\n' "$stale_count"
 }
+
+command_update() {
+    local install_root source_file source_url installer
+    (($# == 0)) || fail 'Usage: git tp update'
+    install_root=${GIT_TP_INSTALL_ROOT:-}
+    [[ -n "$install_root" ]] || fail 'git tp update requires a supported versioned installation'
+    source_file="$install_root/.git-tp/current/source"
+    [[ -r "$source_file" ]] || fail 'installation source is unknown; rerun the supported installer'
+    source_url=$(<"$source_file")
+    [[ -n "$source_url" ]] || fail 'installation source metadata is empty; rerun the supported installer'
+    installer="$install_root/.git-tp/current/lib/git-tp/install.sh"
+    [[ -x "$installer" ]] || fail 'installed update mechanism is missing; rerun the supported installer'
+    GIT_TP_INSTALL_DIR="$install_root" GIT_TP_SOURCE_URL="$source_url" \
+        "$installer" --install-dir "$install_root" || fail 'update failed; the previous release was retained'
+    printf '%s\n' 'git-tp updated successfully'
+}

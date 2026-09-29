@@ -19,6 +19,7 @@ Usage:
   git tp add [--create-branch] <branch>
   git tp remove [-f|--force] <branch>
   git tp cleanup
+    git tp update
   git tp --help
   git tp --version
 EOF
@@ -34,6 +35,9 @@ print_command_help() {
             ;;
         cleanup)
             printf '%s\n' 'Usage: git tp cleanup'
+            ;;
+        update)
+            printf '%s\n' 'Usage: git tp update'
             ;;
     esac
 }
@@ -56,6 +60,14 @@ fi
 command_name=$1
 shift
 case "$command_name" in
+    update)
+        if [[ ${1:-} == "--help" || ${1:-} == "-h" ]]; then
+            print_command_help update
+            exit 0
+        fi
+        command_update "$@"
+        exit $?
+        ;;
     add|remove|cleanup)
         if [[ ${1:-} == "--help" || ${1:-} == "-h" ]]; then
             print_command_help "$command_name"

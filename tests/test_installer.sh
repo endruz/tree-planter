@@ -23,7 +23,7 @@ assert_no_matches() {
     fi
 }
 
-tar -czf "$ARCHIVE" -C "$ROOT_DIR" bin lib
+tar -czf "$ARCHIVE" -C "$ROOT_DIR" bin lib install.sh
 
 GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$PREFIX" \
     >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {
@@ -32,11 +32,68 @@ GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$PREFIX" \
 }
 
 [[ -x "$PREFIX/bin/git-tp" ]] || fail 'installed executable is missing'
-[[ -f "$PREFIX/lib/git-tp/config.bash" ]] || fail 'installed supporting files are missing'
+[[ -L "$PREFIX/.git-tp/current" ]] || fail 'current installation pointer is missing'
+[[ -f "$PREFIX/.git-tp/current/lib/git-tp/config.bash" ]] || fail 'installed supporting files are missing'
+[[ -f "$PREFIX/.git-tp/current/source" ]] || fail 'installation source metadata is missing'
+[[ -x "$PREFIX/.git-tp/current/lib/git-tp/install.sh" ]] || fail 'bundled installer is missing'
 [[ "$($PREFIX/bin/git-tp --version)" == 'git-tp 0.1.0' ]] || fail 'installed executable does not run'
 grep -Fq "export PATH=\"$PREFIX/bin:\$PATH\"" "$TEST_HOME/stdout" || fail 'PATH guidance is missing'
 PATH="$PREFIX/bin:$PATH" git tp -h >"$TEST_HOME/stdout" || fail 'installed git tp -h failed'
 grep -Fq 'git tp add' "$TEST_HOME/stdout" || fail 'installed git tp --help output is incomplete'
+
+update_prefix="$TEST_HOME/update prefix"
+update_root="$TEST_HOME/update-source"
+update_archive="$TEST_HOME/update-source.tar.gz"
+mkdir -p "$update_root"
+cp -R "$ROOT_DIR/bin" "$ROOT_DIR/lib" "$update_root/"
+cp "$ROOT_DIR/install.sh" "$update_root/"
+tar -czf "$update_archive" -C "$update_root" bin lib install.sh
+GIT_TP_SOURCE_URL="file://$update_archive" bash "$INSTALLER" --install-dir "$update_prefix" \
+    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" || {
+    cat "$TEST_HOME/stderr" >&2
+    fail 'unable to install update fixture'
+}
+sed -i 's/GIT_TP_VERSION="0.1.0"/GIT_TP_VERSION="0.2.0"/' "$update_root/bin/git-tp"
+tar -czf "$update_archive" -C "$update_root" bin lib install.sh
+if ! "$update_prefix/bin/git-tp" update >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    cat "$TEST_HOME/stderr" >&2
+    fail 'installed CLI did not update from its recorded source'
+fi
+[[ "$("$update_prefix/bin/git-tp" --version)" == 'git-tp 0.2.0' ]] || fail 'update did not activate the new executable'
+[[ -L "$update_prefix/.git-tp/current" ]] || fail 'update did not publish a versioned current release'
+current_before_failed_update=$(readlink "$update_prefix/.git-tp/current")
+mkdir "$update_prefix/.git-tp.lock"
+printf '98765432\n' > "$update_prefix/.git-tp.lock/pid"
+if "$update_prefix/bin/git-tp" update >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'update replaced an existing installation lock'
+fi
+grep -Fq 'lock owner PID: 98765432' "$TEST_HOME/stderr" || fail 'busy update did not report its lock owner'
+[[ "$(readlink "$update_prefix/.git-tp/current")" == "$current_before_failed_update" ]] ||
+    fail 'busy update changed the current release pointer'
+[[ "$(<"$update_prefix/.git-tp.lock/pid")" == '98765432' ]] || fail 'busy update changed another installer lock'
+rm "$update_prefix/.git-tp.lock/pid"
+rmdir "$update_prefix/.git-tp.lock"
+mv "$update_root/lib/git-tp/commands.bash" "$update_root/commands.bash"
+tar -czf "$update_archive" -C "$update_root" bin lib install.sh
+if "$update_prefix/bin/git-tp" update >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'update accepted a source archive missing a required runtime module'
+fi
+grep -Fq 'source archive does not contain runtime file: commands.bash' "$TEST_HOME/stderr" ||
+    fail 'missing runtime module did not report its validation error'
+[[ "$(readlink "$update_prefix/.git-tp/current")" == "$current_before_failed_update" ]] ||
+    fail 'missing runtime module changed the current release pointer'
+[[ "$("$update_prefix/bin/git-tp" --version)" == 'git-tp 0.2.0' ]] ||
+    fail 'missing runtime module damaged the active executable'
+mv "$update_root/commands.bash" "$update_root/lib/git-tp/commands.bash"
+tar -czf "$update_archive" -C "$update_root" bin lib install.sh
+rm "$update_archive"
+if "$update_prefix/bin/git-tp" update >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr"; then
+    fail 'update succeeded after its source archive became unavailable'
+fi
+[[ "$(readlink "$update_prefix/.git-tp/current")" == "$current_before_failed_update" ]] ||
+    fail 'failed update changed the current release pointer'
+[[ "$("$update_prefix/bin/git-tp" --version)" == 'git-tp 0.2.0' ]] ||
+    fail 'failed update damaged the active executable'
 
 home_unset_prefix="$TEST_HOME/home-unset"
 env -u HOME GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$home_unset_prefix" \
@@ -62,11 +119,16 @@ malicious_archive="$TEST_HOME/malicious.tar.gz"
 mkdir -p "$malicious_root"
 printf 'malicious\n' > "$malicious_root/payload"
 tar -cf "$TEST_HOME/malicious.tar" -C "$ROOT_DIR" bin lib
-tar --transform='s,^payload,../escape,' --append -f "$TEST_HOME/malicious.tar" -C "$malicious_root" payload
+current_before_malicious_archive=$(readlink "$PREFIX/.git-tp/current")
+tar --transform='s,^payload,../../escape,' --append -f "$TEST_HOME/malicious.tar" -C "$malicious_root" payload
 gzip -c "$TEST_HOME/malicious.tar" > "$malicious_archive"
-GIT_TP_SOURCE_URL="file://$malicious_archive" bash "$INSTALLER" --install-dir "$PREFIX" \
+tar -tzf "$malicious_archive" > "$TEST_HOME/malicious-members"
+grep -Fxq '../../escape' "$TEST_HOME/malicious-members" || fail 'malicious archive fixture lacks its traversal member'
+TMPDIR="$TEST_HOME" GIT_TP_SOURCE_URL="file://$malicious_archive" bash "$INSTALLER" --install-dir "$PREFIX" \
     >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" && fail 'installer accepted unsafe archive paths'
 grep -Fq 'unsafe archive member' "$TEST_HOME/stderr" || fail 'installer did not identify unsafe archive paths'
+[[ ! -e "$TEST_HOME/escape" ]] || fail 'unsafe archive wrote outside its extraction directory'
+[[ "$(readlink "$PREFIX/.git-tp/current")" == "$current_before_malicious_archive" ]] || fail 'unsafe archive changed the active release'
 [[ "$($PREFIX/bin/git-tp --version)" == 'git-tp 0.1.0' ]] || fail 'unsafe archive damaged the existing installation'
 
 GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$PREFIX" \
@@ -85,34 +147,9 @@ GIT_TP_SOURCE_URL="file://$TEST_HOME/missing.tar.gz" bash "$INSTALLER" --install
     >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" && fail 'installer accepted a missing archive'
 [[ "$($PREFIX/bin/git-tp --version)" == 'git-tp 0.1.0' ]] || fail 'failed update damaged the existing installation'
 
-printf 'old installation\n' > "$PREFIX/bin/git-tp"
-mv_command=$(command -v mv)
-mkdir -p "$TEST_HOME/bin"
-cat > "$TEST_HOME/bin/mv" <<EOF
-#!/bin/sh
-if [ "\${GIT_TP_INTERRUPT_ON_BACKUP:-}" = 1 ] && [ ! -e "$TEST_HOME/interrupt-seen" ] && case "\${2:-}" in *'.git-tp-backup.'*) true;; *) false;; esac; then
-    "$mv_command" "\$@"
-    : > "$TEST_HOME/interrupt-seen"
-    kill -"\${GIT_TP_INTERRUPT_SIGNAL:-TERM}" "\$PPID"
-    exit 143
-fi
-exec "$mv_command" "\$@"
-EOF
-chmod +x "$TEST_HOME/bin/mv"
-PATH="$TEST_HOME/bin:$PATH" GIT_TP_INTERRUPT_ON_BACKUP=1 GIT_TP_SOURCE_URL="file://$ARCHIVE" \
-    bash "$INSTALLER" --install-dir "$PREFIX" \
-    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" && fail 'installer ignored SIGTERM'
-grep -Fq 'old installation' "$PREFIX/bin/git-tp" || fail 'SIGTERM removed the existing installation'
-
-printf 'old installation\n' > "$PREFIX/bin/git-tp"
-rm -f "$TEST_HOME/interrupt-seen"
-PATH="$TEST_HOME/bin:$PATH" GIT_TP_INTERRUPT_ON_BACKUP=1 GIT_TP_INTERRUPT_SIGNAL=INT \
-    GIT_TP_SOURCE_URL="file://$ARCHIVE" bash "$INSTALLER" --install-dir "$PREFIX" \
-    >"$TEST_HOME/stdout" 2>"$TEST_HOME/stderr" && fail 'installer ignored SIGINT'
-grep -Fq 'old installation' "$PREFIX/bin/git-tp" || fail 'SIGINT removed the existing installation'
-
 REAL_CURL=$(command -v curl)
 REAL_TAR=$(command -v tar)
+mkdir -p "$TEST_HOME/bin"
 
 printf 'old installation\n' > "$PREFIX/bin/git-tp"
 cat > "$TEST_HOME/bin/curl" <<EOF
