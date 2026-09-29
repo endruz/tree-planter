@@ -11,13 +11,18 @@ curl -fsSL https://raw.githubusercontent.com/endruz/tree-planter/main/install.sh
 ```
 
 The installer requires Bash, Git, `curl`, `tar`, and these standard utilities:
-`realpath`, `mktemp`, `find`, `cp`, `mv`, `rm`, `dirname`, `chmod`, and `mkdir`.
+`realpath`, `mktemp`, `find`, `cp`, `mv`, `rm`, `dirname`, `chmod`, `mkdir`,
+`grep`, `ln`, `cat`, and `rmdir`.
 It installs:
 
 ```text
 ~/.local/bin/git-tp
-~/.local/lib/git-tp/
+~/.local/.git-tp/current -> versions/<release>/
 ```
+
+Each release contains the executable, runtime files, update installer, and
+source metadata. The stable command entry point remains at `bin/git-tp` while
+updates atomically switch the `current` symlink.
 
 If `~/.local/bin` is not already on `PATH`, the installer prints the exact
 `export` command to add it. Verify the installation with:
@@ -38,15 +43,37 @@ sh install.sh --install-dir "$HOME/tools"
 ```
 
 Running the installer again updates an existing installation.
+Update a supported versioned installation from its recorded source with:
+
+```bash
+git tp update
+```
+
+The update stages and validates a complete release before switching `current`.
+Download, archive, or staging failures leave the active release unchanged.
+Older flat-layout installations do not support `git tp update`; rerun the
+supported installer to replace them with the versioned layout.
+
+An update uses a per-installation lock. A forced termination such as `SIGKILL`
+can leave the lock behind. Check that its PID is no longer installing or
+updating the prefix before clearing it:
+
+```bash
+lock="$HOME/.local/.git-tp.lock"
+pid=$(cat "$lock/pid" 2>/dev/null || true)
+if [ -n "$pid" ]; then ps -p "$pid" -o pid=,args=; fi
+# After confirming that no installer is active for this prefix:
+rm "$lock/pid"
+rmdir "$lock"
+```
+
 To uninstall the default installation:
 
 ```bash
 rm -f "$HOME/.local/bin/git-tp"
+rm -rf "$HOME/.local/.git-tp"
 rm -rf "$HOME/.local/lib/git-tp"
 ```
-
-The current installer follows `main`.
-Once a versioned GitHub Release is available, use its versioned installer URL to install a fixed release.
 
 ## Configuration
 
@@ -77,6 +104,7 @@ The worktree path is `<root>/<repository-name>/<branch>`. A leading `~/` is expa
 git tp add [--create-branch] <branch>
 git tp remove [-f|--force] <branch>
 git tp cleanup
+git tp update
 ```
 
 - `add` creates a linked worktree from a local or remote-tracking branch. For a remote-tracking branch, it creates a corresponding local branch from the remote commit before creating the worktree. With `--create-branch`, a missing branch is created from the caller's current `HEAD`; in an interactive terminal, `add` can also ask for confirmation before doing so.

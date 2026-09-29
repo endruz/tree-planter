@@ -32,60 +32,63 @@ done
 
 [ -n "$install_dir" ] || install_dir=${HOME:?HOME must be set}/.local
 
-for command_name in bash git realpath curl tar mktemp find cp mv rm dirname chmod mkdir; do
+for command_name in bash git realpath curl tar mktemp find cp mv rm dirname chmod mkdir grep ln cat rmdir; do
     command -v "$command_name" >/dev/null 2>&1 || fail "required command not found: $command_name"
 done
+
+install_dir=$(realpath -m "$install_dir")
+[ ! -d "$install_dir/bin/git-tp" ] || fail 'stable launcher path is a directory'
+mkdir -p "$install_dir/bin" "$install_dir/.git-tp/versions"
+if [ -e "$install_dir/.git-tp/current" ] && [ ! -L "$install_dir/.git-tp/current" ]; then
+    fail 'current installation pointer is not a symlink'
+fi
+
+lock_dir="$install_dir/.git-tp.lock"
+lock_acquired=0
+temp_dir=''
+staging_dir=''
+launcher_file=''
+current_link=''
+
+cleanup() {
+    status=$?
+    trap - 0 1 2 3 15
+    [ -z "$current_link" ] || rm -f "$current_link" || true
+    [ -z "$launcher_file" ] || rm -f "$launcher_file" || true
+    [ -z "$staging_dir" ] || rm -rf "$staging_dir" || true
+    [ -z "$temp_dir" ] || rm -rf "$temp_dir" || true
+    if [ "$lock_acquired" -eq 1 ]; then
+        rm -f "$lock_dir/pid"
+        rmdir "$lock_dir" 2>/dev/null || true
+    fi
+    exit "$status"
+}
+
+handle_sigint() {
+    exit 130
+}
+
+handle_sigterm() {
+    exit 143
+}
+
+trap cleanup 0
+trap handle_sigint 2
+trap handle_sigterm 15
+
+if ! mkdir "$lock_dir" 2>/dev/null; then
+    lock_owner=$(cat "$lock_dir/pid" 2>/dev/null || printf 'unknown')
+    fail "installation is busy (lock owner PID: $lock_owner)"
+fi
+lock_acquired=1
+printf '%s\n' "$$" > "$lock_dir/pid"
 
 temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/git-tp-install.XXXXXX")
 archive="$temp_dir/source.tar.gz"
 members_file="$temp_dir/members"
 details_file="$temp_dir/details"
 extracted_dir="$temp_dir/source"
-staging_dir="$install_dir/.git-tp-staging.$$"
-backup_dir="$install_dir/.git-tp-backup.$$"
-backup_bin=0
-backup_lib=0
-installed_bin=0
-installed_lib=0
-interrupted=0
-
-handle_sigint() {
-    interrupted=1
-    exit 130
-}
-
-handle_sigterm() {
-    interrupted=1
-    exit 143
-}
-
-cleanup() {
-    status=$?
-    trap - 0 1 2 3 15
-    rm -rf "$staging_dir"
-    if [ "$interrupted" -eq 1 ] || [ "$status" -ne 0 ]; then
-        if [ "$backup_bin" -eq 1 ] && [ -e "$backup_dir/bin/git-tp" ]; then
-            rm -f "$install_dir/bin/git-tp"
-            mv "$backup_dir/bin/git-tp" "$install_dir/bin/git-tp"
-        elif [ "$installed_bin" -eq 1 ]; then
-            rm -f "$install_dir/bin/git-tp"
-        fi
-        if [ "$backup_lib" -eq 1 ] && [ -e "$backup_dir/lib/git-tp" ]; then
-            rm -rf "$install_dir/lib/git-tp"
-            mv "$backup_dir/lib/git-tp" "$install_dir/lib/git-tp"
-        elif [ "$installed_lib" -eq 1 ]; then
-            rm -rf "$install_dir/lib/git-tp"
-        fi
-    fi
-    rm -rf "$temp_dir" "$backup_dir"
-    exit "$status"
-}
-trap cleanup 0
-trap handle_sigint 2
-trap handle_sigterm 15
-
-mkdir -p "$install_dir/bin" "$install_dir/lib"
-mkdir -p "$extracted_dir" "$staging_dir" "$backup_dir/bin" "$backup_dir/lib"
+mkdir -p "$extracted_dir"
 curl -fsSL "$source_url" -o "$archive" || fail "unable to download source: $source_url"
 tar -tzf "$archive" > "$members_file" || fail 'unable to inspect source archive'
 tar -tvzf "$archive" > "$details_file" || fail 'unable to inspect source archive'
@@ -109,23 +112,62 @@ source_bin=$(find "$extracted_dir" -type f -path '*/bin/git-tp' -print -quit)
 [ -n "$source_bin" ] || fail 'source archive does not contain bin/git-tp'
 source_root=$(dirname "$(dirname "$source_bin")")
 [ -f "$source_root/lib/git-tp/config.bash" ] || fail 'source archive does not contain lib/git-tp'
+[ -f "$source_root/install.sh" ] || fail 'source archive does not contain install.sh'
+sh -n "$source_root/install.sh" || fail 'source installer contains invalid shell syntax'
 
-cp "$source_bin" "$staging_dir/git-tp"
-cp -R "$source_root/lib/git-tp" "$staging_dir/git-tp-lib"
-chmod +x "$staging_dir/git-tp"
+launcher_is_managed=0
+if [ -f "$install_dir/bin/git-tp" ] && grep -Fq '# git-tp managed launcher v1' "$install_dir/bin/git-tp"; then
+    launcher_is_managed=1
+fi
+if [ "$launcher_is_managed" -eq 0 ]; then
+    launcher_file=$(mktemp "$install_dir/bin/.git-tp.XXXXXX") || fail 'unable to stage stable launcher'
+    cat > "$launcher_file" <<'EOF'
+#!/bin/sh
+set -eu
+# git-tp managed launcher v1
+install_root=$(CDPATH= cd "$(dirname "$0")/.." && pwd -P)
+current="$install_root/.git-tp/current"
+if [ ! -x "$current/bin/git-tp" ]; then
+    printf 'git-tp: installed runtime is missing under %s\n' "$current" >&2
+    exit 1
+fi
+GIT_TP_INSTALL_ROOT=$install_root
+export GIT_TP_INSTALL_ROOT
+exec "$current/bin/git-tp" "$@"
+EOF
+    chmod +x "$launcher_file"
+fi
 
-if [ -e "$install_dir/bin/git-tp" ]; then
-    backup_bin=1
-    mv "$install_dir/bin/git-tp" "$backup_dir/bin/git-tp"
+staging_dir=$(mktemp -d "$install_dir/.git-tp/versions/release.XXXXXX") || fail 'unable to stage release'
+mkdir -p "$staging_dir/bin" "$staging_dir/lib"
+cp "$source_bin" "$staging_dir/bin/git-tp" || fail 'unable to stage source executable'
+cp -R "$source_root/lib/git-tp" "$staging_dir/lib/" || fail 'unable to stage source runtime'
+cp "$source_root/install.sh" "$staging_dir/lib/git-tp/install.sh" || fail 'unable to stage source installer'
+chmod +x "$staging_dir/bin/git-tp" "$staging_dir/lib/git-tp/install.sh"
+bash -n "$staging_dir/bin/git-tp" || fail 'source executable contains invalid shell syntax'
+for runtime_module in config context path git hooks commands; do
+    runtime_file="$staging_dir/lib/git-tp/$runtime_module.bash"
+    [ -f "$runtime_file" ] || fail "source archive does not contain runtime file: ${runtime_file##*/}"
+    bash -n "$runtime_file" || fail "source runtime contains invalid shell syntax: ${runtime_file##*/}"
+done
+runtime_version=$("$staging_dir/bin/git-tp" --version) || fail 'source executable cannot be run'
+case "$runtime_version" in
+    'git-tp '*) ;;
+    *) fail 'source executable returned an invalid version' ;;
+esac
+printf '%s\n' "$source_url" > "$staging_dir/source"
+
+current_link=$(mktemp "$install_dir/.git-tp/.current.XXXXXX") || fail 'unable to stage current pointer'
+rm -f "$current_link"
+ln -s "versions/${staging_dir##*/}" "$current_link" || fail 'unable to stage current pointer'
+staging_dir=''
+mv -Tf "$current_link" "$install_dir/.git-tp/current" || fail 'unable to publish current release'
+current_link=''
+
+if [ "$launcher_is_managed" -eq 0 ]; then
+    mv -T "$launcher_file" "$install_dir/bin/git-tp" || fail 'unable to install stable launcher'
+    launcher_file=''
 fi
-if [ -e "$install_dir/lib/git-tp" ]; then
-    backup_lib=1
-    mv "$install_dir/lib/git-tp" "$backup_dir/lib/git-tp"
-fi
-installed_bin=1
-mv "$staging_dir/git-tp" "$install_dir/bin/git-tp"
-installed_lib=1
-mv "$staging_dir/git-tp-lib" "$install_dir/lib/git-tp"
 
 printf 'git-tp installed in %s\n' "$install_dir"
 case ":${PATH:-}:" in

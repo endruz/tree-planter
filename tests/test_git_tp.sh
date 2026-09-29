@@ -97,6 +97,10 @@ run_cli_tests() {
     assert_stdout_contains 'git tp remove'
     assert_success "$GIT_TP" cleanup --help
     assert_stdout_contains 'git tp cleanup'
+    assert_success "$GIT_TP" update --help
+    assert_stdout_contains 'Usage: git tp update'
+    assert_failure "$GIT_TP" update
+    assert_stderr_contains 'supported versioned installation'
     assert_failure run_git_tp add main
     assert_stderr_contains 'Configuration file not found'
     test_end
